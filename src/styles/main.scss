@@ -1,0 +1,491 @@
+// Laptop dashboard.
+@use 'tokens' as *;
+@use 'base';
+@use 'components';
+
+.app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left));
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+
+  &__status {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+  }
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  h1 {
+    margin: 0;
+    font-family: $font-display;
+    font-size: 20px;
+    font-weight: 800;
+    font-stretch: 125%;
+    line-height: 1;
+  }
+
+  &__sub {
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  &__mark {
+    display: grid;
+    gap: 3px;
+    width: 26px;
+
+    i {
+      height: 5px;
+      border-radius: 2px;
+      background: var(--accent);
+    }
+    i:nth-child(2) {
+      width: 70%;
+      background: var(--bad);
+    }
+    i:nth-child(3) {
+      width: 85%;
+      background: var(--warn);
+    }
+  }
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+
+  button {
+    padding: 8px 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    font-family: $font-display;
+    font-size: 13px;
+    font-weight: 600;
+    font-stretch: 112%;
+    cursor: pointer;
+
+    &.is-on {
+      background: var(--fg);
+      border-color: var(--fg);
+      color: var(--bg);
+    }
+  }
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.viewport {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-2);
+
+  canvas {
+    touch-action: none;
+  }
+}
+
+.pip-overlay {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--fg);
+  border-radius: 6px;
+}
+
+.panel {
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.passenger-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.passenger-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.passenger-selected {
+  padding: 10px;
+  border: 1px solid #d6b442;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+
+  &__title {
+    margin: 0;
+    color: var(--muted);
+    font-family: $font-display;
+    font-size: 11.5px;
+    font-weight: 700;
+    font-stretch: 118%;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+}
+
+.route__name {
+  margin: 0;
+  font-weight: 700;
+}
+
+.session {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 10px;
+
+  &--live {
+    border-left-color: var(--good);
+  }
+  &--stale {
+    border-left-color: var(--warn);
+  }
+  &--lost {
+    border-left-color: var(--muted);
+  }
+
+  &__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+}
+
+.counters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.counter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: var(--surface-2);
+
+  &__label {
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  &__value {
+    font-size: 26px;
+    font-weight: 500;
+    transform-origin: left center;
+  }
+  &__note {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  &--good &__note {
+    color: var(--good);
+  }
+  &--warn &__note {
+    color: var(--warn);
+  }
+  &--bad &__note {
+    color: var(--bad);
+  }
+}
+
+.assist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  textarea {
+    resize: vertical;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+
+  &__answer {
+    margin: 0;
+    padding: 9px 12px;
+    border-radius: 12px 12px 12px 4px;
+    background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  }
+}
+
+@media (max-width: $bp-narrow) {
+  html,
+  body,
+  #root,
+  .app {
+    height: auto;
+  }
+
+  .stage {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .viewport {
+    flex: none;
+    height: 58vh;
+    min-height: 320px;
+  }
+
+  .panel {
+    overflow: visible;
+  }
+
+  .brand__sub {
+    display: none;
+  }
+}
+
+// ---- Twin viewport overlay -------------------------------------------------
+
+.view-controls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+
+  .btn {
+    box-shadow: var(--shadow);
+  }
+
+  &__select {
+    color: var(--fg);
+  }
+}
+
+.ride-card {
+  position: absolute;
+  top: 58px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 230px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+
+  &__title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__hint {
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 11px;
+  }
+}
+
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.fleet-item {
+  justify-content: flex-start;
+  padding: 6px 9px;
+  font-size: 12px;
+
+  &__occ {
+    margin-left: auto;
+    opacity: 0.78;
+    font-size: 11px;
+  }
+}
+
+.livery {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+
+  &--red {
+    background: #c8312b;
+  }
+  &--yellow {
+    background: #efbe2c;
+  }
+  &--green {
+    background: #2f8f4e;
+  }
+}
+
+.map-status {
+  position: absolute;
+  top: 14px;
+  right: 12px;
+  box-shadow: var(--shadow);
+}
+
+// Light map underneath in both themes, so the credit is styled for it.
+.map-credit {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  padding: 2px 8px;
+  border-top-left-radius: 8px;
+  background: rgb(255 255 255 / 0.8);
+  color: #3b4250;
+  font-size: 10.5px;
+
+  a {
+    color: inherit;
+  }
+}
+
+.scene-labels {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+// Map labels sit on a light map in both themes: dark text, white halo.
+.scene-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: #2b313c;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-shadow:
+    0 0 3px #fff,
+    0 0 3px #fff,
+    0 0 6px #fff;
+  will-change: transform;
+
+  &--suburb,
+  &--town,
+  &--city {
+    color: #4b5160;
+    font-family: $font-display;
+    font-size: 13px;
+    font-weight: 700;
+    font-stretch: 118%;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  &--quarter,
+  &--village {
+    color: #6a7080;
+    font-size: 11px;
+  }
+
+  &--stop,
+  &--terminal {
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: #2a4bd7;
+    color: #fff;
+    text-shadow: none;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  }
+
+  &--terminal {
+    font-size: 12.5px;
+    font-weight: 800;
+  }
+}
+
+.stop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0 0 0 20px;
+  font-size: 12.5px;
+
+  li span:last-child {
+    float: right;
+    color: var(--muted);
+  }
+}
+
+.viewport-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  max-width: 560px;
+  padding: 32px;
+
+  h2 {
+    margin: 0;
+    font-family: $font-display;
+    font-size: 18px;
+  }
+
+  p {
+    margin: 0;
+  }
+}

@@ -1,0 +1,98 @@
+// Phone tracker. Big touch targets, one column, readable in sunlight.
+@use 'tokens' as *;
+@use 'base';
+@use 'components';
+
+.tracker {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: max(12px, env(safe-area-inset-top)) 16px 24px;
+
+  &__bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--fg);
+    color: var(--bg);
+
+    b {
+      font-family: $font-display;
+      font-stretch: 120%;
+    }
+    .mono {
+      margin-left: auto;
+      font-size: 12px;
+    }
+  }
+
+  &__tag {
+    padding: 0 6px;
+    border-radius: 5px;
+    background: var(--warn);
+    color: #1a1e26;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  &__card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+
+  input {
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font-family: $font-mono;
+    font-size: 16px; // 16px stops iOS from zooming on focus
+  }
+}
+
+.phase {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border-left: 5px solid var(--muted);
+
+  &__label {
+    font-family: $font-display;
+    font-size: 20px;
+    font-weight: 800;
+  }
+  &__reason {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  &--possible_vehicle {
+    border-left-color: var(--accent);
+  }
+  &--confirmed {
+    border-left-color: var(--good);
+  }
+  &--ended {
+    border-left-color: var(--warn);
+  }
+}

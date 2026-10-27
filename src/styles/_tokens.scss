@@ -1,0 +1,60 @@
+// Design tokens. CSS custom properties so light/dark switch at runtime;
+// SCSS variables only for things that never change (breakpoints, fonts).
+
+$bp-narrow: 820px;
+$font-display: 'Archivo', 'Arial Narrow', system-ui, sans-serif;
+$font-body:
+  'Atkinson Hyperlegible',
+  system-ui,
+  -apple-system,
+  'Segoe UI',
+  sans-serif;
+$font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+@mixin light {
+  --bg: #eeeeec;
+  --surface: #ffffff;
+  --surface-2: #f4f4f2;
+  --line: #dcdcd9;
+  --fg: #1a1e26;
+  --muted: #5c6472;
+  --accent: #2a4bd7;
+  --accent-fg: #ffffff;
+  --good: #2f9e5b;
+  --warn: #c98a12;
+  --bad: #d6453d;
+  --flash: rgb(42 75 215 / 0.35);
+  --shadow: 0 1px 2px rgb(20 30 50 / 0.06), 0 6px 24px rgb(20 30 50 / 0.06);
+  color-scheme: light;
+}
+
+@mixin dark {
+  --bg: #0c1016;
+  --surface: #141a23;
+  --surface-2: #1a212c;
+  --line: #283140;
+  --fg: #e8ecf3;
+  --muted: #9aa4b6;
+  --accent: #8099ff;
+  --accent-fg: #0c1016;
+  --good: #4cc27c;
+  --warn: #e6a547;
+  --bad: #f06a62;
+  --flash: rgb(128 153 255 / 0.35);
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 28px rgb(0 0 0 / 0.35);
+  color-scheme: dark;
+}
+
+:root {
+  @include light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    @include dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  @include dark;
+}

@@ -1,0 +1,31 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "sessions": {
+      ".read": "auth != null",
+      "$sessionId": {
+        ".write": "auth != null && $sessionId.matches(/^[A-Za-z0-9_-]{1,64}$/)",
+        ".validate": "newData.hasChildren(['meta', 'fix', 'trip'])",
+        "meta": {
+          ".validate": "newData.child('sessionId').val() === $sessionId && newData.child('vehicleId').isString() && newData.child('vehicleId').val().length <= 32"
+        },
+        "fix": {
+          ".validate": "newData.child('lat').isNumber() && newData.child('lat').val() >= -90 && newData.child('lat').val() <= 90 && newData.child('lng').isNumber() && newData.child('lng').val() >= -180 && newData.child('lng').val() <= 180 && newData.child('accuracyM').isNumber() && newData.child('timestamp').isNumber()"
+        },
+        "trip": {
+          ".validate": "newData.val() === 'WAITING' || newData.val() === 'POSSIBLE_VEHICLE' || newData.val() === 'CONFIRMED' || newData.val() === 'ENDED'"
+        }
+      }
+    },
+    "traces": {
+      ".read": "auth != null",
+      "$sessionId": {
+        "$fixId": {
+          ".write": "auth != null && !data.exists()",
+          ".validate": "newData.child('lat').isNumber() && newData.child('lng').isNumber() && newData.child('timestamp').isNumber()"
+        }
+      }
+    }
+  }
+}
