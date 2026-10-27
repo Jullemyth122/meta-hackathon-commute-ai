@@ -1,0 +1,241 @@
+# CommuteAI — Complete Technical Notes, Architecture & Implementation Reference
+
+> **Meta Hackathon — CommuteAI**
+> A GPS-anchored 3D WebGPU digital twin of Philippine jeepney transport paired with a validated **under-₱600 ESP32-S3-CAM** in-cabin passenger counting pipeline, a real-time smartphone GPS tracker (`/track.html`), and a grounded Meta AI operations assistant (`/api/assist`).
+
+---
+
+## 1. Validated Hardware & Cost Proof (Under ₱600)
+
+This specification proves that the **CommuteAI** Three.js/WebGPU simulation mirrors a real, buildable hardware pipeline using off-the-shelf microcontroller parts under **₱600** with zero custom AI dataset collection required.
+
+| Component / Layer | Proven Real-World Spec | Cost (PH) | How It Is Modelled & Validated in CommuteAI |
+| --- | --- | --- | --- |
+| **Microcontroller & Camera** | **ESP32-S3-CAM (N16R8)** + **OV2640 Wide-Angle Lens (`120°–160°`)** or **ESP32-CAM + MB Base** | **₱350 – ₱550** | Modelled physically in 3D (`CabinCameraModel` in [`src/scene/DoorwayScene.tsx`](./src/scene/DoorwayScene.tsx) and [`src/scene/world/CabinCameraFeed.tsx`](./src/scene/world/CabinCameraFeed.tsx)) and optically in [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts) at `CABIN_CAM` (`position: (1.2, 2.12, 0)`, `lookAt: (-3.3, 0.9, 0)`, `vfov: 100°` / `~116°` horizontal at `4:3`). |
+| **In-Vehicle Connection (Video)** | **Offline Local Wi-Fi** (Driver Phone Hotspot with Mobile Data OFF, or ESP32 SoftAP) | **₱0** (Built-in) | Streams live `QVGA (320×240)` MJPEG video frames from the ceiling-mounted ESP32-S3-CAM directly to the driver's phone browser without needing cellular data or a router. |
+| **In-Vehicle Connection (Count Only)** | **Bluetooth Low Energy (BLE 5.0)** | **₱0** (Built-in) | Sends instant `+1` / `-1` packet updates (`<5 ms` latency) if edge-counted on the module. |
+| **Phone → Cloud / Twin Link** | **Firebase Realtime Database** (or **BroadcastChannel / localStorage Loopback** offline) | **₱0** (Spark Plan) | Implemented in [`src/net/firebaseTransport.ts`](./src/net/firebaseTransport.ts) and [`src/net/loopbackTransport.ts`](./src/net/loopbackTransport.ts) behind a unified `Transport` interface ([`src/net/transport.ts`](./src/net/transport.ts)). |
+| **AI Detection Model** | **Pre-trained Head Detector (YOLOv8n head weights: CrowdHuman / SCUT-HEAD)** via **TensorFlow.js** | **₱0** (Open-source) | Runs in the driver's phone browser. Modelled in [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts) (`ESP32_HEAD_DETECTOR`) with realistic miss rate (`5%`), centroid jitter (`6%` of box width), depth occlusion (`45%` overlap onset), and inference latency (`25–40 ms`). |
+| **Frame Rate & Resolution** | **`QVGA (320×240)` @ `24 FPS`** (`25–40 ms` inference per frame) | **N/A** | Rendered into an exact `320×240` `WebGLRenderTarget` (`PipRenderer` in [`src/scene/doorway/PipRenderer.tsx`](./src/scene/doorway/PipRenderer.tsx)) and sampled on an independent `24 Hz` camera clock in [`CabinPipeline.tick`](./src/core/doorway/pipeline.ts). |
+
+### Why Front-Ceiling Cabin Mounting + Head Detection (Instead of a Pure 90° Doorway Mount)
+1. **Full-Cabin + Doorway Coverage in One Lens:** In a traditional Philippine jeepney, mounting the ESP32-S3-CAM on the **front cabin ceiling (`x = 1.2 m, y = 2.12 m, z = 0 m`)** looking back over both benches toward the rear doorway (`REAR_X = -3.1 m`) allows a single camera to see **both** people stepping through the rear doorway **and** all 14 seated passengers along the left and right benches (`SEATS = 14`, max capacity `22` with standing/extended load).
+2. **Why Heads Instead of Full-Body `COCO-SSD "person"` Boxes:** From the front of a packed jeepney, seated passengers' torsos and legs overlap along each bench, causing full-body bounding boxes to merge. Because the camera is mounted high on the ceiling (`y = 2.12 m`), passengers' **heads** separate vertically in the image plane the farther back they sit, remaining distinct and countable.
+3. **Self-Correcting Hybrid Count:** Doorway crossings (`boarded` / `alighted`) are combined with a steady lower bound of visible heads in the cabin (`SteadyCount`), so if two passengers board closely and one crossing is occluded, the visible head count automatically corrects the total (`corrections++`).
+
+---
+
+## 2. Complete Technology Stack, Frameworks & Libraries
+
+All frameworks and libraries configured in [`package.json`](./package.json):
+
+| Category | Library / Framework | Version | Purpose in CommuteAI |
+| --- | --- | --- | --- |
+| **UI Framework** | `react` / `react-dom` | `^19.3.1` | Declarative HUD panels, view controls, PiP overlay, and `/track.html` mobile web app. |
+| **Language** | `typescript` | `^6.0.3` | Strict static typing across simulation math, geo projections, transport payloads, and 3D scene components. |
+| **3D Engine** | `three` (`WebGPURenderer`) | `^0.186.1` | Core 3D rendering engine using `three/webgpu` (`WebGPURenderer` with automatic `WebGL2` fallback). |
+| **React 3D Bridge** | `@react-three/fiber` | `^9.8.2` | React reconciler for Three.js driving the `useFrame` simulation and render pipeline. |
+| **3D Controls & Helpers** | `@react-three/drei` | `^10.7.9` | `MapControls` camera controller and `<Html>` world-space stop/vehicle markers. |
+| **UI State Management** | `zustand` | `^5.0.16` | Lightweight reactive store ([`src/app/store.ts`](./src/app/store.ts)) for UI state (mode, route, selected jeepney, camera view, FOV cone toggle, theme). |
+| **Animation** | `gsap` / `@gsap/react` | `^3.15.0` / `^2.1.2` | Smooth camera shot transitions ([`src/scene/CameraRig.tsx`](./src/scene/CameraRig.tsx)) and passenger counter badge flashes ([`src/ui/CounterBadge.tsx`](./src/ui/CounterBadge.tsx)). |
+| **Realtime Backend** | `firebase` (Realtime DB + Auth) | `^13.1.0` | Streams live GPS fixes and trip states from `/track.html` on a smartphone to the 3D twin dashboard. |
+| **3D Vector Map Tiles** | `@mapbox/vector-tile`, `pbf`, `earcut` | `^3.0.0`, `^5.1.2`, `^3.2.4` | Decodes OpenFreeMap Protobuf vector tiles and triangulates polygons (buildings, water, parks, roads) inside a background Web Worker. |
+| **Styling** | `sass-embedded` (SCSS) | `^1.106.1` | Design tokens, light/dark theme variables, dashboard layout, and mobile tracker stylesheet. |
+| **Serverless AI API** | Vercel Functions ([`api/assist.ts`](./api/assist.ts)) | Node `>=22` | Calls Meta's OpenAI-compatible chat completions API (`META_API_KEY`, `META_MODEL`, `META_API_BASE`) to explain live twin telemetry without hallucinating. |
+| **Build & Test Tooling** | `vite`, `vitest`, `eslint`, `prettier` | `^8.3.5`, `^5.0.5` | Multi-page bundling (`index.html` + `track.html`), HTTPS LAN phone dev mode (`@vitejs/plugin-basic-ssl`), and 66 automated unit/integration tests across 9 suites. |
+
+---
+
+## 3. Step-by-Step Pipeline Tracker (Implemented & Verified)
+
+Every step from the hardware specification is implemented and tested end-to-end:
+
+1. **[x] Step 1: Front-Ceiling Cabin Mounting & Physical 3D Sensor Model**
+   - **Implementation:** [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts), [`src/scene/DoorwayScene.tsx`](./src/scene/DoorwayScene.tsx), and [`src/scene/world/CabinCameraFeed.tsx`](./src/scene/world/CabinCameraFeed.tsx).
+   - **How it works:** The virtual ESP32-S3-CAM is mounted at `(1.2, 2.12, 0)` in the jeepney's ground frame, looking back at `(-3.3, 0.9, 0)` with a `100°` vertical FOV (`4:3` aspect ratio). A physical 3D ESP32-S3-CAM module (mounting bracket, dark PCB, gold lens ribbon, silver OV2640 barrel, glass lens, green LED) and a toggleable **Red FOV Detection Cone** spanning from the lens (`x = 1.2`) to the rear doorway (`REAR_X = -3.1`) are rendered inside both the Sensor Lab and the Live Twin.
+
+2. **[x] Step 2: Frame Capture at `QVGA (320×240)` @ `24 FPS`**
+   - **Implementation:** [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts) (`FRAME_W = 320`, `FRAME_H = 240`, `ESP32_HEAD_DETECTOR.fps = 24`) and [`src/scene/doorway/PipRenderer.tsx`](./src/scene/doorway/PipRenderer.tsx).
+   - **How it works:** `CabinPipeline.tick(nowMs, capture)` runs on the camera's own `24 Hz` clock (`period = 41.67 ms`) independent of the monitor's refresh rate. If a new frame arrives before the previous frame's `25–40 ms` inference finishes (`exposedAt < busyUntil`), the frame is recorded as `dropped`, matching real edge-device frame dropping.
+
+3. **[x] Step 3: Vehicle-to-Phone & Phone-to-Twin Transport (Offline Loopback + Firebase)**
+   - **Implementation:** [`src/net/loopbackTransport.ts`](./src/net/loopbackTransport.ts) and [`src/net/firebaseTransport.ts`](./src/net/firebaseTransport.ts).
+   - **How it works:** Works zero-config offline across browser tabs via `BroadcastChannel` + `localStorage` (`LoopbackTransport`), and over the internet between a real smartphone and laptop via Firebase Realtime Database (`FirebaseTransport`) with anonymous authentication and security rules ([`database.rules.json`](./database.rules.json)).
+
+4. **[x] Step 4: 3D-to-2D Head Projection & Realistic Detector Simulation**
+   - **Implementation:** `projectPerson` in [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts) and `CabinPipeline.detect` in [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts).
+   - **How it works:** Projects each rider's 3D head center (`HEAD_CENTRE_Y = 1.40 m` scaled by posture/stoop) into the `320×240` pixel frame via `ndc.project(cam)`. Computes apparent head width from distance (`focalPx = (FRAME_H / 2) / tan(vfov / 2)`), sorts people front-to-back by depth, computes pairwise bounding-box overlap occlusion (`overlapFraction`), applies random detector misses (`missRate: 0.05` amplified by occlusion above `0.45`), and adds Gaussian centroid/size jitter (`jitter: 0.06`).
+
+5. **[x] Step 5: Greedy Nearest-Neighbour Centroid Tracking & Doorway Side Classification**
+   - **Implementation:** [`src/core/doorway/centroidTracker.ts`](./src/core/doorway/centroidTracker.ts) and `cabinSide` in [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts).
+   - **How it works:**
+     - `CentroidTracker` matches detections frame-to-frame using Euclidean distance + box-width difference (`maxJumpPx: 10`, `maxMissedFrames: 6`, `maxSizeRatio: 1.4`).
+     - `cabinViewFor(cam)` projects the 3D rear doorway opening (`x = -3.1`) into a 2D pixel rectangle `door` and computes the reference head width at the doorway threshold (`doorHeadWidthPx`).
+     - `cabinSide(box, cabin)` classifies any head outside the doorway rectangle as `'in'` (inside the cabin). For heads seen inside the doorway rectangle, it compares `box.w / doorHeadWidthPx`: `< 1.05` is `'out'` (on the street behind the door), `> 1.35` is `'in'` (stepped inside the cabin), and `1.05 .. 1.35` is `'unsure'` (hysteresis band so pixel jitter cannot cause false flips).
+
+6. **[x] Step 6: Hybrid Doorway Transition + Steady Head-Count Floor & HUD Telemetry**
+   - **Implementation:** [`src/core/doorway/occupancy.ts`](./src/core/doorway/occupancy.ts), [`src/ui/PipOverlay.tsx`](./src/ui/PipOverlay.tsx), and [`src/ui/CounterBadge.tsx`](./src/ui/CounterBadge.tsx).
+   - **How it works:**
+     - `DoorTransitions` requires a tracked head to stay on the new side (`'out' -> 'in'` or `'in' -> 'out'`) for `CONFIRM_FRAMES = 3` consecutive detections before incrementing `boarded` or `alighted`.
+     - `SteadyCount` computes the 80th percentile of visible cabin heads over a 24-frame (`~1 s`) rolling window and requires a new level to hold for `600 ms`. Whenever `heads.value > base + boarded - alighted`, `PassengerCounter` raises `base` and increments `corrections`.
+     - Live telemetry (`FPS`, `latencyMs`, `dropped`, `current`, `boarded`, `alighted`, `seenNow`, `seenSteady`, bounding boxes, track IDs, and doorway rectangle) is rendered in real time on [`src/ui/PipOverlay.tsx`](./src/ui/PipOverlay.tsx) and [`src/ui/CounterBadge.tsx`](./src/ui/CounterBadge.tsx).
+
+---
+
+## 4. Mathematical & Simulation Models
+
+### A. Geodesy, Polyline Map-Matching & GPS Noise Rejection
+- **Local Tangent-Plane Projection ([`src/core/geo/projection.ts`](./src/core/geo/projection.ts)):**
+  Converts WGS84 `(lat, lng)` around the route origin `(lat0, lng0)` into local scene metres `(x = East, z = South)` using `METRES_PER_DEGREE_LAT = 111_132.92` and `cos(lat0)` longitudinal scaling.
+- **Uncertainty-Gated Speed Estimation ([`src/core/tracking/gpsFilter.ts`](./src/core/tracking/gpsFilter.ts)):**
+  Rejects fixes with `accuracyM > 35 m`. Over a `15 s` rolling window, displacement $d = \text{haversine}(f_0, f_n)$ is only considered significant when:
+  $$d > \sqrt{\sigma_0^2 + \sigma_n^2}$$
+  This prevents stationary GPS drift (e.g., two $\pm 10\text{ m}$ fixes $3\text{ s}$ apart) from producing fake $12\text{ km/h}$ vehicle speeds.
+- **Trip State Machine ([`src/core/tracking/tripState.ts`](./src/core/tracking/tripState.ts)):**
+  Transitions `WAITING` $\rightarrow$ `POSSIBLE_VEHICLE` only when speed $\ge 3.5\text{ m/s}$ ($12.6\text{ km/h}$) with $\ge 4$ good fixes is sustained for $12\text{ s}$ while within the route corridor. Transitions to `CONFIRMED` **only** when the rider taps confirm. Leaving the route corridor for $30\text{ s}$ resets `POSSIBLE_VEHICLE` to `WAITING`.
+- **Windowed Route Matching & Pose Extrapolation ([`src/core/tracking/liveVehicle.ts`](./src/core/tracking/liveVehicle.ts)):**
+  Projects GPS fixes onto the route polyline within a window $[s_{\text{last}} - 60\text{ m},\; s_{\text{last}} + 250\text{ m}]$ so loop or out-and-back routes never snap to the opposite lane. Extrapolates forward along the polyline for at most `MAX_EXTRAPOLATION_S = 2 s` and blends the rendered 3D pose with exponential smoothing ($\tau = 0.5\text{ s}$). Vehicles turn `stale` after `8 s` without a fix and `lost` after `30 s`.
+
+### B. Multi-Segment Passenger Boarding/Alighting, Two-Bone Arm IK & Bicycle Steering Model
+- **Two-Step Climb & Cabin Aisle Trajectory ([`src/core/people/riderMotion.ts`](./src/core/people/riderMotion.ts)):**
+  Every boarding passenger follows continuous segments parameterized by arc-length and speed:
+  1. **Approach (`1.15 m/s`):** Walk from curb/street (`x = -6.2 m`) to the road spot behind the step (`stepOutsideX`).
+  2. **Two-Step Climb & Grab-Pole Reach (`CLIMB_S = 0.62 s` per step):** Step from the road onto the rear bumper step (`L.step`), lifting the leading knee (`lift`, `liftLeg`), leaning forward from the hips (`CLIMB_LEAN = 0.28 rad`), and reaching both hands onto the entrance grab poles (`reach`), then climb onto the cabin floor while ducking (`DUCK = 0.84`) so the top of the head clears the `2.04 m` doorway header.
+  3. **Center Aisle (`0.85 m/s`):** Walk forward along `z = 0` stooped under the low roof (`STOOP = 0.88`, `AISLE_LEAN = 0.12 rad`) to the assigned bench row `seat.x`.
+  4. **Turn (`0.40 s`):** Rotate yaw toward the opposite bench (`yaw = ∓π/2`) while shifting laterally toward `seat.z`.
+  5. **Sit (`0.85 s`):** Ease `sit: 0 -> 1` (thighs rotate to $+90^\circ$, shins to $-90^\circ$) and settle into a per-person seated habit (`lap`, `phone`, or `bag`).
+  Alighting executes the exact reverse trajectory (`stand up → turn → aisle → step down onto step → down to road → walk away`) with single-file doorway spacing (`DOOR_SPACING_S = 1.0 s`) so riders never overlap in the doorway.
+- **9-Mesh Instanced Human Rig, Two-Bone IK & Kinematic Bicycle Steering ([`src/scene/people/personRig.ts`](./src/scene/people/personRig.ts), [`src/scene/jeepney/jeepneyGeometry.ts`](./src/scene/jeepney/jeepneyGeometry.ts), [`src/scene/jeepney/JeepneyInstances.tsx`](./src/scene/jeepney/JeepneyInstances.tsx)):**
+  - All passengers and drivers across the entire scene are drawn in **9 `InstancedMesh` draw calls** (`torso`, `pelvis`, `head`, `hair`, and paired `thigh`, `shin`, `foot`, `sleeve`, `forearm`).
+  - **Turning Steering Wheel Mesh (`steeringWheelGeometry`):** Drawn as its own `InstancedMesh` at `STEERING = { centre: (1.3, 0.68, -0.46), rake: 40°, radius: 0.175 }` and rotated about its raked axis each frame by the **kinematic bicycle model**:
+    $$\delta_{\text{wheel}} = \text{clamp}\!\left(R_{\text{steer}} \cdot \arctan\!\left(\frac{L \cdot \omega}{\max(v, 1.5)}\right),\; -2.4,\; +2.4\right)$$
+    where $R_{\text{steer}} = 14$ (`STEERING_RATIO`), $L = 4.3\text{ m}$ (`WHEELBASE_M`), $\omega$ is the vehicle's smoothed yaw rate ($\text{rad/s}$), and $v$ is smoothed ground speed ($\text{m/s}$).
+  - **Analytical Two-Bone Arm IK (`RigWriter.solveArm`):** Computes exact shoulder swing, splay, and elbow flexion angles from the law of cosines so both of the driver's hands lock onto the rotating steering wheel rim at "ten-to-two" (`rimPoint(±62°, handTurn)`) within `< 2 mm`, while the driver's feet work the pedals (`pose.pedal`), the torso pivots at hip height (`HIP_Y = 0.74 m`), and the head glances into the turn.
+
+### C. LTFRB Traditional Jeepney Fare Formula ([`src/core/fare.ts`](./src/core/fare.ts))
+- Base fare: **₱14.00** for the first **4 km**, plus **₱2.00** per additional started kilometre:
+  $$\text{Fare}_{\text{regular}}(d) = 14 + 2 \cdot \max\bigl(0, \lceil d - 4 \rceil\bigr)$$
+- Student / Senior Citizen / PWD **20% discount**, rounded to the nearest 25 centavos:
+  $$\text{Fare}_{\text{discounted}}(d) = \frac{\text{round}\bigl(0.8 \cdot \text{Fare}_{\text{regular}}(d) \times 4\bigr)}{4}$$
+
+---
+
+## 5. Complete File-by-File Codebase Reference
+
+### A. Root & Configuration Files
+- [`index.html`](./index.html) — Main desktop/laptop entry page mounting the 3D Digital Twin & Sensor Lab ([`src/main.tsx`](./src/main.tsx)).
+- [`track.html`](./track.html) — Lightweight mobile web page ([`src/tracker/main.tsx`](./src/tracker/main.tsx)) for in-vehicle GPS sharing and rider trip confirmation (zero Three.js bundle overhead).
+- [`vite.config.ts`](./vite.config.ts) — Multi-page Vite configuration (`index.html` + `track.html`), `@` path alias (`./src`), and optional HTTPS (`@vitejs/plugin-basic-ssl`) when launched with `npm run dev:phone`.
+- [`vercel.json`](./vercel.json) — Vercel configuration routing `/api/**/*.ts` serverless functions with a 30-second max duration.
+- [`firebase.json`](./firebase.json) & [`database.rules.json`](./database.rules.json) — Firebase Realtime Database security rules requiring authentication and validating `vehicles/$sessionId/fix` and `status` schemas.
+- [`scripts/fetch-route.mjs`](./scripts/fetch-route.mjs) — CLI script that fetches route geometry and nearby bus stops from OpenStreetMap Overpass / OSRM and outputs a pre-bundled `.route.json`.
+
+### B. Serverless AI Assistant (`api/`)
+- [`api/assist.ts`](./api/assist.ts) — `POST /api/assist` Vercel Serverless Function. Validates a live telemetry snapshot (`route`, `selectedVehicle`, `liveVehicles`, `simFleet`, `doorway`, `question`) and queries the Meta LLM with a strict grounding system prompt that forbids inventing numbers.
+- [`api/health.ts`](./api/health.ts) — `GET /api/health` endpoint reporting whether `META_API_KEY` and `META_MODEL` are configured on the server.
+- [`api/_lib/meta.ts`](./api/_lib/meta.ts) — OpenAI-compatible client wrapper for Meta's chat completion endpoint (`META_API_BASE`, `META_MODEL`, `META_API_KEY`).
+
+### C. Pure Simulation & Domain Core (`src/core/` — Zero React/Three Dependencies, Unit Tested)
+- **Geodesy & Routes (`src/core/geo/`):**
+  - [`src/core/geo/projection.ts`](./src/core/geo/projection.ts) — Equirectangular tangent-plane projection (`toLocal` / `toLatLng`) and `haversineM`.
+  - [`src/core/geo/polyline.ts`](./src/core/geo/polyline.ts) — Arc-length parameterized 2D polyline (`pointAt(s)`, `project(point, window)`).
+  - [`src/core/geo/simplify.ts`](./src/core/geo/simplify.ts) — Ramer–Douglas–Peucker (`simplifyPolyline`) polyline simplification.
+  - [`src/core/geo/routes.ts`](./src/core/geo/routes.ts) — Loads the bundled **Malaria – SM City Fairview (Quirino Hwy, 6.3 km, 8 stops)** route ([`src/data/malaria-fairview.route.json`](./src/data/malaria-fairview.route.json)), builds the offline synthetic road, parses uploaded GeoJSON/JSON routes, and converts live GPS traces into downloadable routes.
+- **GPS Filtering & Live Vehicle Tracking (`src/core/tracking/`):**
+  - [`src/core/tracking/types.ts`](./src/core/tracking/types.ts) — Shared types (`GpsFix`, `TripPhase`, `VehicleStatus`, `VehicleSnapshot`).
+  - [`src/core/tracking/gpsFilter.ts`](./src/core/tracking/gpsFilter.ts) — `GpsFilter` accuracy and uncertainty-gated speed estimator.
+  - [`src/core/tracking/tripState.ts`](./src/core/tracking/tripState.ts) — `stepTrip` finite state machine (`WAITING` $\rightarrow$ `POSSIBLE_VEHICLE` $\rightarrow$ `CONFIRMED` $\rightarrow$ `ENDED`).
+  - [`src/core/tracking/liveVehicle.ts`](./src/core/tracking/liveVehicle.ts) — `LiveVehicle` windowed map-matching, bounded extrapolation, exponential smoothing, and staleness detection.
+- **Cabin Camera Counting Pipeline (`src/core/doorway/`):**
+  - [`src/core/doorway/centroidTracker.ts`](./src/core/doorway/centroidTracker.ts) — `CentroidTracker` greedy nearest-neighbour multi-object tracker with size-ratio gating.
+  - [`src/core/doorway/occupancy.ts`](./src/core/doorway/occupancy.ts) — `DoorTransitions`, `SteadyCount`, and `PassengerCounter`.
+  - [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts) — `CabinPipeline` orchestrating `24 Hz` frame capture, depth-sorted occlusion, detector noise/miss simulation, `cabinSide` classification, tracking, and telemetry generation.
+  - [`src/core/doorway/doorwaySim.ts`](./src/core/doorway/doorwaySim.ts) — Ground-truth single-vehicle stop simulator for the **Sensor Lab** mode.
+- **Articulated Passenger Choreography & Stop Queues (`src/core/people/`):**
+  - [`src/core/people/riderMotion.ts`](./src/core/people/riderMotion.ts) — `RiderMotion` 5-stage continuous trajectory generator for boarding and alighting.
+  - [`src/core/people/stopLayout.ts`](./src/core/people/stopLayout.ts) — Curb waiting queues, boarding approach waypoints, and sidewalk dispersal targets.
+  - [`src/core/people/passengerSystem.ts`](./src/core/people/passengerSystem.ts) — Full-route multi-vehicle passenger simulation across all stops and jeepneys.
+- **Simulated Fleet & Fare Calculation (`src/core/fleet/`, `src/core/fare.ts`):**
+  - [`src/core/fleet/fleetSim.ts`](./src/core/fleet/fleetSim.ts) — `FleetSim` simulating 8–10 jeepneys cruising along the route with headway spacing, stop dwell timers, and passenger demand.
+  - [`src/core/fare.ts`](./src/core/fare.ts) — `fareFor(km, discounted)` implementing the LTFRB traditional jeepney fare matrix.
+- **3D Vector Tile Map Builder (`src/core/map/`, `src/map/`):**
+  - [`src/core/map/tiles.ts`](./src/core/map/tiles.ts), [`src/core/map/style.ts`](./src/core/map/style.ts), [`src/core/map/meshBuilder.ts`](./src/core/map/meshBuilder.ts), [`src/core/map/buildTile.ts`](./src/core/map/buildTile.ts), [`src/core/map/roadClearance.ts`](./src/core/map/roadClearance.ts) — Decodes OpenFreeMap z14 vector tiles, clips buildings back from road corridors, and merges each tile into at most 5 typed buffers (`land`, `water`, `roadCasing`, `roadFill`, `buildings`).
+  - [`src/map/tileSource.ts`](./src/map/tileSource.ts) & [`src/map/tileWorker.ts`](./src/map/tileWorker.ts) — Fetches tiles around the active route and builds geometries off the main thread inside a Web Worker using zero-copy `Transferable` `ArrayBuffer`s.
+
+### D. Application State & Runtimes (`src/app/`)
+- [`src/app/store.ts`](./src/app/store.ts) — Zustand store holding UI state (`mode: 'twin' | 'doorway'`, `route`, `selectedVehicleId`, `follow: { kind: 'fleet' | 'live', id, view: 'chase' | 'inside' | 'pov' }`, `showFov`, `shotSeq`, `theme`).
+- [`src/app/twinRuntime.ts`](./src/app/twinRuntime.ts) & [`src/app/doorwayRuntime.ts`](./src/app/doorwayRuntime.ts) — Plain TypeScript runtime classes that advance the 60 FPS simulation outside React so moving vehicles and passengers cause **zero React re-renders**.
+
+### E. 3D Scene, Instanced Jeepneys, Articulated People & Camera Rig (`src/scene/`)
+- [`src/scene/Renderer.tsx`](./src/scene/Renderer.tsx) — Initializes Three.js `WebGPURenderer` (with automatic fallback to `WebGL2`), tone mapping, and shadow maps.
+- [`src/scene/TwinScene.tsx`](./src/scene/TwinScene.tsx) — Main 3D Digital Twin canvas with `MapControls` configured for orbit-first rotation (`LEFT = ROTATE`, `RIGHT = PAN`) and dynamic `minDistance` (`0.35 m` in outside chase view, `0.08 m` in front/inside POV) so users can smoothly zoom in and orbit 360° around any jeepney.
+- [`src/scene/CameraRig.tsx`](./src/scene/CameraRig.tsx) — Frame-ordered (`FRAME_ORDER.CAMERA`) camera controller supporting:
+  - `overview` (full route framing),
+  - `street` (close 3/4 street shot),
+  - `chase` (zero-lag delta-tracked 360° outside orbit around the followed jeepney's cabin center `x = -0.5, y = 1.2`),
+  - `inside` (full-viewport view directly through the ceiling ESP32-S3-CAM lens),
+  - `pov` (**Front Cab / Driver POV** at `POV_EYE = (0.94, 1.50, 0.24)` seated beside the driver looking across the steering wheel, gauges, windshield wipers, and road ahead).
+- [`src/scene/jeepney/jeepneyGeometry.ts`](./src/scene/jeepney/jeepneyGeometry.ts) & [`src/scene/jeepney/JeepneyInstances.tsx`](./src/scene/jeepney/JeepneyInstances.tsx):
+  - Procedural Sarao-style Philippine jeepney merged by material slot into ~14 `InstancedMesh` draw calls for the entire fleet.
+  - Features a realistic **step-in U-shaped front cab doorway** with chrome tubular trim, **flush matte-black dashboard** with recessed gauge rings and lower firewall, **dual windshield wipers**, connected steering column + 3-spoke steering wheel, floor gear shifter, clean front tire fenders, hood horses, side mirrors, and cushioned benches for 14 passengers (`SEATS = 14`).
+  - **Direct 3D Clicking (Zero Draw-Call OBB Raycasting):** Hovering and clicking any jeepney in the 3D scene raycasts against `HIT_BOX` in local vehicle space; clicking the body selects Outside View (`chase`), and clicking the front cab (`x > 0.65`) switches to Front Cab POV (`pov`).
+- [`src/scene/people/personRig.ts`](./src/scene/people/personRig.ts) & [`src/scene/people/PeopleInstances.tsx`](./src/scene/people/PeopleInstances.tsx):
+  - Draws every articulated person in the scene in **9 `InstancedMesh` draw calls total**, including the driver's live push-pull steering, pedal footwork, torso lean, and mirror checks.
+- [`src/scene/DoorwayScene.tsx`](./src/scene/DoorwayScene.tsx) & [`src/scene/world/CabinCameraFeed.tsx`](./src/scene/world/CabinCameraFeed.tsx):
+  - Renders the Sensor Lab scene and attaches the physical `CabinCameraModel` + toggleable **Red FOV Detection Cone** (`showFov`) to the currently monitored jeepney in the Live Twin, feeding `PipRenderer` (`320×240` QVGA render target).
+
+### F. UI Panels & Mobile Tracker (`src/ui/`, `src/tracker/`)
+- [`src/ui/Header.tsx`](./src/ui/Header.tsx) — Top navigation bar switching between **Live twin** and **Sensor lab**, backend/transport status badges, and phone tracker shortcut.
+- [`src/ui/ViewControls.tsx`](./src/ui/ViewControls.tsx) — Floating viewport toolbar with direct **Jeepney `<select>` dropdown**, **Ride a jeepney / Next jeepney**, **Outside view**, **Inside view**, **Front POV**, **Show/Hide FOV cone**, **Whole route**, and **Street view** buttons.
+- [`src/ui/TwinPanel.tsx`](./src/ui/TwinPanel.tsx) — Right sidebar showing route info, live GPS phones on the road, clickable simulated fleet cards (with plate, speed, stop status, and `ESP-CAM` passenger count), and LTFRB fare calculator.
+- [`src/ui/DoorwayPanel.tsx`](./src/ui/DoorwayPanel.tsx) — Sensor Lab control panel comparing **Camera estimate** vs **Ground truth**, manual `+1 Board` / `-1 Alight` triggers, camera preset buttons (`Outside`, `ESP32-CAM`, `Rear door`), and `Show/Hide FOV cone` toggle.
+- [`src/ui/PipOverlay.tsx`](./src/ui/PipOverlay.tsx) — Bottom-right `320×240` Picture-in-Picture HUD drawing the live ESP32-S3-CAM video feed, red head bounding boxes, track IDs, doorway threshold box, and live `FPS / latency / riders / boarded / alighted` telemetry.
+- [`src/ui/AssistPanel.tsx`](./src/ui/AssistPanel.tsx) — AI Assistant panel that sends the current twin snapshot to `/api/assist`.
+- [`src/tracker/TrackerApp.tsx`](./src/tracker/TrackerApp.tsx) & [`src/tracker/useGeolocation.ts`](./src/tracker/useGeolocation.ts) — Smartphone web app (`/track.html`) with live GPS status, accuracy/speed readouts, built-in simulated ride generator (for indoor testing), and explicit **"Confirm I'm on this jeepney"** / **"End trip"** controls.
+
+---
+
+## 6. Automated Test Suite (9 Test Files, 66 Tests)
+
+Run `npm test` to execute all 66 Vitest unit and integration tests:
+- [`src/core/core.test.ts`](./src/core/core.test.ts) (16 tests) — Equirectangular projection, polyline map-matching, Ramer–Douglas–Peucker simplification, `GpsFilter` noise rejection, `stepTrip` state transitions, `LiveVehicle` smoothing/staleness, and LTFRB fare calculation.
+- [`src/core/doorway/pipeline.test.ts`](./src/core/doorway/pipeline.test.ts) (9 tests) — `CentroidTracker` identity preservation, occlusion handling, `DoorTransitions` confirmation, `SteadyCount` hysteresis, and `CabinPipeline` frame drops.
+- [`src/scene/people/personRig.test.ts`](./src/scene/people/personRig.test.ts) (8 tests) — Analytical two-bone arm IK holding the steering wheel rim within `< 2 mm` across wheel turns (`0, +0.6, -0.9 rad`), clockwise steering geometry, driver backrest alignment, step-climbing knee lift, and ducking under the `2.04 m` doorway header.
+- [`src/scene/doorway/cabinCamera.test.ts`](./src/scene/doorway/cabinCamera.test.ts) (4 tests) — End-to-end 3D projection + counting accuracy over three 10-minute simulated stop cycles (`seed 3, 5, 9`).
+- [`src/core/people/passengerSystem.test.ts`](./src/core/people/passengerSystem.test.ts) (6 tests) — Multi-stop passenger queueing, boarding/alighting choreography, and capacity enforcement.
+- [`src/core/motion.test.ts`](./src/core/motion.test.ts) (4 tests) — Continuous `RiderMotion` pose trajectories, doorway crossing times, and smooth fleet headway driving.
+- [`src/core/map/map.test.ts`](./src/core/map/map.test.ts) (10 tests) & [`src/core/map/roadClearance.test.ts`](./src/core/map/roadClearance.test.ts) (6 tests) — Vector tile geometry building and road-building clearance clipping.
+- [`src/scene/CameraRig.test.ts`](./src/scene/CameraRig.test.ts) (3 tests) — Zero-lag moving cabin camera invariance across frame subscription orders.
+
+---
+
+## 7. Instructions: Setup, Running, Phone Demo & Deployment
+
+### 1. Install & Run Locally
+```bash
+npm install
+npm run dev
+```
+- Open **`http://localhost:5173`** for the 3D Digital Twin & Sensor Lab dashboard.
+- Open **`http://localhost:5173/track.html`** in a second tab to test the mobile GPS tracker immediately using the zero-config same-browser loopback.
+
+### 2. Verify Typecheck, Lint, Tests & Production Build
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```
+
+### 3. How to Interact with the 3D Twin & Sensor Lab
+- **Choose Any Jeepney:** Click any jeepney directly on the 3D road, pick one from the top toolbar dropdown, or click any vehicle card in the right **Simulated fleet** list.
+- **Inspect Outside, Inside & Front Cab POV:**
+  - While following a jeepney, **left-drag** to orbit 360° around the cabin, **scroll** to zoom right up to the windows, and **right-drag** to pan.
+  - Click **Front POV** in the toolbar (or click the front hood/cab of the jeepney in 3D) to sit beside the driver and watch the live steering, pedals, gauges, and road ahead.
+  - Click **Inside view** to look directly through the ceiling-mounted ESP32-S3-CAM lens.
+  - Click **Hide FOV cone / Show FOV cone** to toggle the red 3D camera frustum inside the cabin.
+
+### 4. Connect a Real Smartphone over Wi-Fi / Internet (Optional)
+1. Copy `.env.example` to `.env` and fill in your `VITE_FIREBASE_*` keys from a free Firebase Spark project (enable **Realtime Database** and **Anonymous Auth**).
+2. Deploy database rules: `npx firebase-tools deploy --only database`.
+3. Run `npm run dev:phone` and open `https://<your-laptop-LAN-IP>:5173/track.html` on your phone (or deploy to Vercel for automatic HTTPS).

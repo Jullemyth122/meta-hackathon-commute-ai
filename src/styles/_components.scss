@@ -1,0 +1,115 @@
+// Small, reusable pieces shared by the dashboard and the phone tracker.
+@use 'tokens' as *;
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--muted);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  &--primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+
+    &:hover:not(:disabled) {
+      border-color: var(--accent);
+      filter: brightness(1.08);
+    }
+  }
+
+  &--ghost {
+    background: transparent;
+  }
+
+  &--big {
+    width: 100%;
+    padding: 14px;
+    font-size: 16px;
+    border-radius: 12px;
+  }
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--surface);
+  text-decoration: none;
+
+  @mixin tone($c) {
+    color: $c;
+    border-color: transparent;
+    background: color-mix(in srgb, #{$c} 14%, transparent);
+  }
+
+  &--good {
+    @include tone(var(--good));
+  }
+  &--warn {
+    @include tone(var(--warn));
+  }
+  &--bad {
+    @include tone(var(--bad));
+  }
+  &--link:hover {
+    color: var(--accent);
+  }
+}
+
+// Two-column key/value list.
+.kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 12.5px;
+
+  > :nth-child(odd) {
+    color: var(--muted);
+  }
+  > :nth-child(even) {
+    overflow-wrap: anywhere;
+  }
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 13px;
+
+  input {
+    margin-top: 3px;
+    accent-color: var(--accent);
+  }
+}
