@@ -1,22 +1,80 @@
 # CommuteAI — Complete Technical Notes, Architecture & Implementation Reference
 
 > **Meta Hackathon — CommuteAI**
-> A GPS-anchored 3D WebGPU digital twin of Philippine jeepney transport paired with a validated **under-₱600 ESP32-S3-CAM** in-cabin passenger counting pipeline, a real-time smartphone GPS tracker (`/track.html`), and a grounded Meta AI operations assistant (`/api/assist`).
+> A GPS-anchored 3D WebGPU digital twin of Philippine jeepney transport, a simulated cabin passenger counter with a proposed low-cost ESP32-camera-to-phone deployment, a smartphone GPS tracker (`/track.html`), and a grounded Meta AI operations assistant (`/api/assist`). Hardware cost, detector accuracy and financial benefits require field validation.
+
+## Hackathon contribution, provenance and AI role
+
+### Development dates and reused foundation
+
+The participant guide supplied by the author lists the kickoff on **October 26, 2026 at noon Eastern Time** and the building period as **October 27–November 4, 2026**. The kickoff is October 27 at midnight in Manila. Repository history records:
+
+- `bfd4b9a`: README initialization, October 26, 2026 at 09:06:54 +08:00, before the kickoff.
+- `942c6ca`: first implementation commit, October 27, 2026 at 14:19:56 +08:00, after the kickoff and on the first stated building date.
+
+Commit timestamps establish when work was recorded, not when every line was originally authored. **The author reports reusing a 3D foundation from their earlier code. That foundation is pre-existing work and is not claimed as a new hackathon contribution.** The exact upstream repository and file-level boundary have not been recorded here; the initial implementation commit must not be treated as proof that every included rendering asset or utility was newly created.
+
+The author's reported hackathon work is the CommuteAI-specific transport application and integration: OpenStreetMap/OpenFreeMap mapping, driver and commuter experiences, fleet and passenger behaviour, the virtual cabin-counter experiment, phone tracking, Meta voice/context integration, route and fuel advice, and service/economics experiments. The feature inventory below links to their current implementation; it is not a line-by-line authorship audit.
+
+**OpenStreetMap integration is a CommuteAI feature added to the reused 3D foundation, as reported by the author.** OpenStreetMap supplies geographic data, while OpenFreeMap serves the vector tiles that CommuteAI converts into roads, buildings, water and parks for its 3D twin. This choice keeps the basemap accessible without a Google Maps API key or Google Maps usage charges. [OpenFreeMap](https://openfreemap.org/) offers its public tile service without registration or API keys. The cost comparison is with [Google Maps Platform's usage-based pricing and free usage caps](https://developers.google.com/maps/billing-and-pricing/overview): Google Maps is not universally paid from the first request, but billable usage can incur charges. The contribution is CommuteAI's integration and rendering of these existing mapping resources, not creation of OpenStreetMap or OpenFreeMap.
+
+The supplied guide permits building on existing products or codebases when new contributions are clearly identified. The submission and three-minute video should explicitly disclose the reused foundation and demonstrate the newly developed CommuteAI features. Reuse alone does not establish disqualification, and these notes do not guarantee eligibility or replace the organisers' decision. The supplied copy omits the detailed scoring rubric (`[table]`), so no AI score or finalist prediction is asserted.
+
+### What Meta AI contributes
+
+CommuteAI is designed to turn transport state into understandable, actionable guidance for a driver or commuter speaking English, Tagalog or Taglish. Its intended benefit is easier access to relevant decisions through natural questions and voice; improved driving decisions, fare collection or advice-following have not yet been measured in a field pilot.
+
+| Layer | Current implementation | Attribution and evidence boundary |
+| --- | --- | --- |
+| Spoken questions | [`api/transcribe.ts`](./api/transcribe.ts) sends recorded WAV questions to Meta transcription with language biases and local stop-name keywords. | Meta speech recognition; the default model identifier is `muse-voice-transcribe-1.0`, overridable through `META_TRANSCRIBE_MODEL`. A configured endpoint and successful live call are required to demonstrate it. |
+| Contextual answers | [`api/assist.ts`](./api/assist.ts) sends the relevant screen summary and computed plan to the Meta model configured through `META_MODEL`. Its prompt requests answers in the user's language and consistent with the supplied facts. | Meta supplies language interpretation and explanation. Prompt grounding reduces opportunities for unsupported answers but does not prove they cannot occur. |
+| Transport calculations | [`api/_lib/planner.ts`](./api/_lib/planner.ts) and [`src/core/advisory`](./src/core/advisory) calculate stop/pass advice, ETAs, seat estimates, queue assignments, fares and fuel estimates. | Deterministic application logic, not calculations performed or independently verified by Meta. Some answers, including trip budgets and arrival guidance, have direct deterministic paths. |
+| Spoken replies | [`api/speak.ts`](./api/speak.ts), [`src/net/voice.ts`](./src/net/voice.ts) | ElevenLabs or Azure when configured, with browser speech fallback. Spoken output in this implementation is not attributed to Meta. |
+| Resilience and cost control | Planner fallback, compact context, 60-second answer cache and server-only credentials. | `/api/assist` returns `source` as `meta-ai`, `deterministic-planner` or `deterministic-fallback`. Missing configuration, math mode or credit-saving mode can produce a useful answer without a Meta call. |
+
+For a judge-facing AI demonstration, record the configured model identifier and show a successful Meta transcription and an answer with `source: "meta-ai"`. A planner fallback must be labelled as such. Cached Meta answers remain Meta-derived, but do not demonstrate a fresh inference request. Do not expose API keys in the recording or logs.
+
+### Current feature inventory and what each feature knows
+
+| Feature | User benefit and implementation | Current data boundary |
+| --- | --- | --- |
+| OpenStreetMap-based 3D map | Uses OpenFreeMap vector tiles to show real roads, buildings, water and parks without a Google Maps API dependency. Tiles are decoded and converted to 3D meshes in background workers. [`tileSource.ts`](./src/map/tileSource.ts), [`tileWorker.ts`](./src/map/tileWorker.ts), [`buildTile.ts`](./src/core/map/buildTile.ts) | OpenStreetMap is the geographic data source; OpenFreeMap is the tile provider. Basemap geometry does not supply live traffic, current transit service or passenger demand. |
+| Driver stop/pass guidance | Explains pickups, drop-offs, capacity and riders already covered by a jeepney ahead. [`driver.ts`](./src/core/advisory/driver.ts), [`dispatch.ts`](./src/core/advisory/dispatch.ts) | Calculated from the focused route's simulated state. It is advisory, not an automatic vehicle control system. |
+| Approaching commuters | Shows known walkers/tricycle riders within 500 m of their stop, their remaining distance and ETA, and whether they are expected before the jeepney. [`approach.ts`](./src/core/advisory/approach.ts) | Distances and arrival times are calculated from simulated journeys. Meta can explain the supplied facts; it does not visually detect people down the road. Unknown arrival estimates are not treated as zero. |
+| Catchable rides and seat availability | Helps a commuter avoid a jeepney that arrives before they reach the stop, or one whose seats are taken by people ahead in the queue. [`commuter.ts`](./src/core/advisory/commuter.ts), [`CommuterPanel.tsx`](./src/ui/phone/CommuterPanel.tsx) | Seats and arrival times are estimates, not reservations. Future destinations and queue order are known in the simulation; a deployment needs corresponding real inputs. |
+| Arrival explanations | Answers whether people are still approaching and whether a ride can be caught. [`arrivalAdvice.ts`](./api/_lib/arrivalAdvice.ts) | An ETA comparison does not reserve a seat or instruct a driver to wait minutes for a distant rider. Current guidance says to recheck on arrival. More fares are a possible outcome to test, not a promised result. |
+| Fuel and refuelling advice | Remaining fuel to a terminal, estimated savings, tank state, and reachable stations ahead on the driver's side of the route. [`stations.ts`](./src/core/fuel/stations.ts), [`DriverPanel.tsx`](./src/ui/phone/DriverPanel.tsx) | Uses bundled station data and dated DOE price ranges; expected prices are range midpoints, not live pump quotes. Advice stays on the franchise route. |
+| Trip budgets and earnings | Distinguishes a full trip budget from the remaining leg; models boundary and owner-driver costs and daily earnings. [`tripBudget.ts`](./src/core/advisory/tripBudget.ts), [`earnings.ts`](./src/app/earnings.ts) | Costs and earnings depend on inputs and assumptions. Fare revenue minus diesel alone is not take-home income. |
+| Network trip planning | Direct or one-transfer journeys, walking/tricycle access, directional stops and rider-category fares. [`plan.ts`](./src/core/network/plan.ts), [`TripPlanner.tsx`](./src/ui/network/TripPlanner.tsx) | Network data includes the 2015 DOTC GTFS feed and road-derived paths. Other routes use flow estimates. Current route coverage must be verified in the field. |
+| Traffic-sensitive simulation | Rush-hour speeds, terminal queues, fleet spacing, working days and refuelling alter the simulated journey. [`fleetSim.ts`](./src/core/fleet/fleetSim.ts) | This is simulated traffic behaviour. No live traffic feed or Meta traffic-detection system is demonstrated. Phone GPS supplies position/speed observations, not verified city-wide congestion. |
+| Phone GPS tracking | Actual browser geolocation, noise filtering, explicit vehicle confirmation and stale/lost indicators; an indoor simulated ride is also available. [`TrackerApp.tsx`](./src/tracker/TrackerApp.tsx), [`liveVehicle.ts`](./src/core/tracking/liveVehicle.ts) | A phone's position does not independently identify its vehicle, passenger count or destination. Simulated sessions are labelled. |
+| Cabin sensor experiment | Virtual camera projection, detector noise/occlusion, tracking, crossing counts and visible-head correction, with a sensor lab and PiP telemetry. [`pipeline.ts`](./src/core/doorway/pipeline.ts) | Detection inputs come from projected virtual people, not real image inference. The YOLO/phone deployment is proposed, not an integrated Meta vision feature. |
+| Operator twin and economics lab | Inspect a route, compare no-app/planner/planner-plus-Meta policies, and export ledgers and audits. [`EconomicsLab.tsx`](./src/ui/EconomicsLab.tsx), [`simulation results`](./docs/simulation-results/README.md) | Seeded model results, not measured savings. Some high-load scenarios reduce service; voice-driven adoption uplift is an unmeasured hypothesis. Saved result versions may differ from the current model. |
+
+### Proposed ESP32 camera → YOLO detector → phone deployment
+
+The intended low-cost design uses the ESP32 camera for image capture and a paired phone for detector inference, tracking and counting; the phone can then publish occupancy alongside GPS. A candidate YOLO head detector would need compatible model weights, preprocessing, runtime integration and testing on the target phone. Training or fine-tuning on suitable licensed cabin footage may be needed; this repository does not contain a completed training run, real-camera inference integration or hardware benchmark.
+
+The under-₱600 figure below is a **component-budget target**, assuming an existing phone. It is not a verified complete installed price: mounting, power, wiring, enclosure, delivery, connectivity and maintenance must be costed. Any cheaper configuration remains a candidate until actual parts and measurements are recorded. A locally connected camera may avoid cellular video upload, but cloud updates and Meta requests still require connectivity.
+
+The simulator supplies passenger positions, queue order and destinations directly through [`twinState.ts`](./src/app/twinState.ts). A real deployment must obtain or estimate those facts, account for people without the app, and expose uncertainty. Camera occupancy and GPS alone cannot establish how many people await a stop or where each rider will alight.
+
+Field evidence still needed: camera counts against manual counts under varied lighting and occlusion; phone processing speed and power use; real GPS-to-dashboard operation; route/ETA accuracy; successful Meta voice/context interactions; and a corridor pilot measuring passenger waiting, service and driver costs.
 
 ---
 
-## 1. Validated Hardware & Cost Proof (Under ₱600)
+## 1. Proposed Hardware Budget and Simulated Pipeline
 
-This specification proves that the **CommuteAI** Three.js/WebGPU simulation mirrors a real, buildable hardware pipeline using off-the-shelf microcontroller parts under **₱600** with zero custom AI dataset collection required.
+This specification describes the hardware design that the **CommuteAI** Three.js/WebGPU simulation aims to support. Component prices and detector performance below are design assumptions, not purchase quotes or measured hardware results. A real installation and model evaluation are still required.
 
-| Component / Layer | Proven Real-World Spec | Cost (PH) | How It Is Modelled & Validated in CommuteAI |
+| Component / Layer | Proposed Spec | Indicative Component Budget (PH) | Current Implementation or Proposed Integration |
 | --- | --- | --- | --- |
 | **Microcontroller & Camera** | **ESP32-S3-CAM (N16R8)** + **OV2640 Wide-Angle Lens (`120°–160°`)** or **ESP32-CAM + MB Base** | **₱350 – ₱550** | Modelled physically in 3D (`CabinCameraModel` in [`src/scene/DoorwayScene.tsx`](./src/scene/DoorwayScene.tsx) and [`src/scene/world/CabinCameraFeed.tsx`](./src/scene/world/CabinCameraFeed.tsx)) and optically in [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts) at `CABIN_CAM` (`position: (1.2, 2.12, 0)`, `lookAt: (-3.3, 0.9, 0)`, `vfov: 100°` / `~116°` horizontal at `4:3`). |
-| **In-Vehicle Connection (Video)** | **Offline Local Wi-Fi** (Driver Phone Hotspot with Mobile Data OFF, or ESP32 SoftAP) | **₱0** (Built-in) | Streams live `QVGA (320×240)` MJPEG video frames from the ceiling-mounted ESP32-S3-CAM directly to the driver's phone browser without needing cellular data or a router. |
-| **In-Vehicle Connection (Count Only)** | **Bluetooth Low Energy (BLE 5.0)** | **₱0** (Built-in) | Sends instant `+1` / `-1` packet updates (`<5 ms` latency) if edge-counted on the module. |
-| **Phone → Cloud / Twin Link** | **Firebase Realtime Database** (or **BroadcastChannel / localStorage Loopback** offline) | **₱0** (Spark Plan) | Implemented in [`src/net/firebaseTransport.ts`](./src/net/firebaseTransport.ts) and [`src/net/loopbackTransport.ts`](./src/net/loopbackTransport.ts) behind a unified `Transport` interface ([`src/net/transport.ts`](./src/net/transport.ts)). |
-| **AI Detection Model** | **Pre-trained Head Detector (YOLOv8n head weights: CrowdHuman / SCUT-HEAD)** via **TensorFlow.js** | **₱0** (Open-source) | Runs in the driver's phone browser. Modelled in [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts) (`ESP32_HEAD_DETECTOR`) with realistic miss rate (`5%`), centroid jitter (`6%` of box width), depth occlusion (`45%` overlap onset), and inference latency (`25–40 ms`). |
-| **Frame Rate & Resolution** | **`QVGA (320×240)` @ `24 FPS`** (`25–40 ms` inference per frame) | **N/A** | Rendered into an exact `320×240` `WebGLRenderTarget` (`PipRenderer` in [`src/scene/doorway/PipRenderer.tsx`](./src/scene/doorway/PipRenderer.tsx)) and sampled on an independent `24 Hz` camera clock in [`CabinPipeline.tick`](./src/core/doorway/pipeline.ts). |
+| **In-Vehicle Connection (Video)** | **Local Wi-Fi** (phone hotspot or ESP32 SoftAP) | Built-in radio; operating costs not assessed | Proposed MJPEG camera-to-phone stream. The repository currently renders virtual camera frames; real stream integration and phone compatibility remain to be tested. |
+| **In-Vehicle Connection (Count Only)** | **Bluetooth Low Energy** | Board-dependent | Optional future transport if counting is available on a capable edge device. No BLE counting integration or latency measurement is demonstrated here. |
+| **Phone → Cloud / Twin Link** | **Firebase Realtime Database** or same-browser **BroadcastChannel** | Depends on usage, hosting and connectivity | GPS/session transport is implemented in [`firebaseTransport.ts`](./src/net/firebaseTransport.ts) and [`loopbackTransport.ts`](./src/net/loopbackTransport.ts). Publishing physical camera occupancy is additional integration work. |
+| **AI Detection Model** | Candidate **YOLO head detector** on a phone, e.g. through TensorFlow.js | Weights, data and runtime licensing/costs must be checked | [`pipeline.ts`](./src/core/doorway/pipeline.ts) models detections with assumed miss rate (`5%`), jitter (`6%`), occlusion onset (`45%`) and latency (`25–40 ms`). No YOLO inference or training is currently integrated. |
+| **Frame Rate & Resolution** | Simulation target: **`QVGA (320×240)` @ `24 FPS`** | Hardware benchmark pending | Rendered into a `320×240` target in [`PipRenderer`](./src/scene/doorway/PipRenderer.tsx) and sampled on a `24 Hz` simulated camera clock in [`CabinPipeline.tick`](./src/core/doorway/pipeline.ts). These are not measured capture/inference rates on an ESP32 or phone. |
 
 ### Why Front-Ceiling Cabin Mounting + Head Detection (Instead of a Pure 90° Doorway Mount)
 1. **Full-Cabin + Doorway Coverage in One Lens:** In a traditional Philippine jeepney, mounting the ESP32-S3-CAM on the **front cabin ceiling (`x = 1.2 m, y = 2.12 m, z = 0 m`)** looking back over both benches toward the rear doorway (`REAR_X = -3.1 m`) allows a single camera to see **both** people stepping through the rear doorway **and** all 14 seated passengers along the left and right benches (`SEATS = 14`, max capacity `22` with standing/extended load).
@@ -41,14 +99,14 @@ All frameworks and libraries configured in [`package.json`](./package.json):
 | **Realtime Backend** | `firebase` (Realtime DB + Auth) | `^13.1.0` | Streams live GPS fixes and trip states from `/track.html` on a smartphone to the 3D twin dashboard. |
 | **3D Vector Map Tiles** | `@mapbox/vector-tile`, `pbf`, `earcut` | `^3.0.0`, `^5.1.2`, `^3.2.4` | Decodes OpenFreeMap Protobuf vector tiles and triangulates polygons (buildings, water, parks, roads) inside a background Web Worker. |
 | **Styling** | `sass-embedded` (SCSS) | `^1.106.1` | Design tokens, light/dark theme variables, dashboard layout, and mobile tracker stylesheet. |
-| **Serverless AI API** | Vercel Functions ([`api/assist.ts`](./api/assist.ts)) | Node `>=22` | Calls Meta's OpenAI-compatible chat completions API (`META_API_KEY`, `META_MODEL`, `META_API_BASE`) to explain live twin telemetry without hallucinating. |
-| **Build & Test Tooling** | `vite`, `vitest`, `eslint`, `prettier` | `^8.3.5`, `^5.0.5` | Multi-page bundling (`index.html` + `track.html`), HTTPS LAN phone dev mode (`@vitejs/plugin-basic-ssl`), and 66 automated unit/integration tests across 9 suites. |
+| **Serverless AI API** | Vercel Functions ([`api/assist.ts`](./api/assist.ts)) | Node `>=22` | Calls Meta's OpenAI-compatible chat completions API (`META_API_KEY`, `META_MODEL`, `META_API_BASE`) to explain supplied twin telemetry with instructions to stay grounded in the computed plan. |
+| **Build & Test Tooling** | `vite`, `vitest`, `eslint`, `prettier` | `^8.3.5`, `^5.0.5` | Multi-page bundling (`index.html` + `track.html`), HTTPS LAN phone dev mode (`@vitejs/plugin-basic-ssl`), the `/api` functions in the dev server, and the unit/integration test suite. |
 
 ---
 
-## 3. Step-by-Step Pipeline Tracker (Implemented & Verified)
+## 3. Step-by-Step Simulation Pipeline
 
-Every step from the hardware specification is implemented and tested end-to-end:
+The following virtual-camera and counting stages are implemented and covered by simulation tests. These tests do not establish real camera, wireless transport or detector performance:
 
 1. **[x] Step 1: Front-Ceiling Cabin Mounting & Physical 3D Sensor Model**
    - **Implementation:** [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts), [`src/scene/DoorwayScene.tsx`](./src/scene/DoorwayScene.tsx), and [`src/scene/world/CabinCameraFeed.tsx`](./src/scene/world/CabinCameraFeed.tsx).
@@ -56,11 +114,11 @@ Every step from the hardware specification is implemented and tested end-to-end:
 
 2. **[x] Step 2: Frame Capture at `QVGA (320×240)` @ `24 FPS`**
    - **Implementation:** [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts) (`FRAME_W = 320`, `FRAME_H = 240`, `ESP32_HEAD_DETECTOR.fps = 24`) and [`src/scene/doorway/PipRenderer.tsx`](./src/scene/doorway/PipRenderer.tsx).
-   - **How it works:** `CabinPipeline.tick(nowMs, capture)` runs on the camera's own `24 Hz` clock (`period = 41.67 ms`) independent of the monitor's refresh rate. If a new frame arrives before the previous frame's `25–40 ms` inference finishes (`exposedAt < busyUntil`), the frame is recorded as `dropped`, matching real edge-device frame dropping.
+   - **How it works:** `CabinPipeline.tick(nowMs, capture)` runs on the camera's own `24 Hz` clock (`period = 41.67 ms`) independent of the monitor's refresh rate. If a new frame arrives before the previous frame's `25–40 ms` inference finishes (`exposedAt < busyUntil`), the frame is recorded as `dropped`, modelling the possibility of dropped frames; the latency values are assumptions.
 
-3. **[x] Step 3: Vehicle-to-Phone & Phone-to-Twin Transport (Offline Loopback + Firebase)**
+3. **[x] Step 3: Phone-to-Twin GPS/Session Transport (Loopback + Firebase)**
    - **Implementation:** [`src/net/loopbackTransport.ts`](./src/net/loopbackTransport.ts) and [`src/net/firebaseTransport.ts`](./src/net/firebaseTransport.ts).
-   - **How it works:** Works zero-config offline across browser tabs via `BroadcastChannel` + `localStorage` (`LoopbackTransport`), and over the internet between a real smartphone and laptop via Firebase Realtime Database (`FirebaseTransport`) with anonymous authentication and security rules ([`database.rules.json`](./database.rules.json)).
+   - **How it works:** Works zero-config offline across browser tabs via `BroadcastChannel` (`LoopbackTransport`), and over the internet between a real smartphone and laptop via Firebase Realtime Database (`FirebaseTransport`) with anonymous authentication and security rules ([`database.rules.json`](./database.rules.json)).
 
 4. **[x] Step 4: 3D-to-2D Head Projection & Realistic Detector Simulation**
    - **Implementation:** `projectPerson` in [`src/scene/doorway/cabinCamera.ts`](./src/scene/doorway/cabinCamera.ts) and `CabinPipeline.detect` in [`src/core/doorway/pipeline.ts`](./src/core/doorway/pipeline.ts).
@@ -140,7 +198,7 @@ Every step from the hardware specification is implemented and tested end-to-end:
   - [`src/core/geo/projection.ts`](./src/core/geo/projection.ts) — Equirectangular tangent-plane projection (`toLocal` / `toLatLng`) and `haversineM`.
   - [`src/core/geo/polyline.ts`](./src/core/geo/polyline.ts) — Arc-length parameterized 2D polyline (`pointAt(s)`, `project(point, window)`).
   - [`src/core/geo/simplify.ts`](./src/core/geo/simplify.ts) — Ramer–Douglas–Peucker (`simplifyPolyline`) polyline simplification.
-  - [`src/core/geo/routes.ts`](./src/core/geo/routes.ts) — Loads the bundled **Malaria – SM City Fairview (Quirino Hwy, 6.3 km, 8 stops)** route ([`src/data/malaria-fairview.route.json`](./src/data/malaria-fairview.route.json)), builds the offline synthetic road, parses uploaded GeoJSON/JSON routes, and converts live GPS traces into downloadable routes.
+  - [`src/core/geo/routes.ts`](./src/core/geo/routes.ts) — Loads the bundled **Tungko – SM City Fairview (Quirino Highway)** route ([`src/data/tungko-fairview.route.json`](./src/data/tungko-fairview.route.json)), builds the offline synthetic road, parses uploaded GeoJSON/JSON routes, and converts live GPS traces into downloadable routes.
 - **GPS Filtering & Live Vehicle Tracking (`src/core/tracking/`):**
   - [`src/core/tracking/types.ts`](./src/core/tracking/types.ts) — Shared types (`GpsFix`, `TripPhase`, `VehicleStatus`, `VehicleSnapshot`).
   - [`src/core/tracking/gpsFilter.ts`](./src/core/tracking/gpsFilter.ts) — `GpsFilter` accuracy and uncertainty-gated speed estimator.
@@ -163,7 +221,7 @@ Every step from the hardware specification is implemented and tested end-to-end:
   - [`src/map/tileSource.ts`](./src/map/tileSource.ts) & [`src/map/tileWorker.ts`](./src/map/tileWorker.ts) — Fetches tiles around the active route and builds geometries off the main thread inside a Web Worker using zero-copy `Transferable` `ArrayBuffer`s.
 
 ### D. Application State & Runtimes (`src/app/`)
-- [`src/app/store.ts`](./src/app/store.ts) — Zustand store holding UI state (`mode: 'twin' | 'doorway'`, `route`, `selectedVehicleId`, `follow: { kind: 'fleet' | 'live', id, view: 'chase' | 'inside' | 'pov' }`, `showFov`, `shotSeq`, `theme`).
+- [`src/app/store.ts`](./src/app/store.ts) — Zustand store holding UI state (`view: 'twin' | 'driver' | 'commuter' | 'doorway' | 'economics'`, `route`, `scenario`, `simulationSpeed`, `follow: { kind: 'sim' | 'live', …, view: 'chase' | 'inside' | 'pov' }`, `showFov`, `shot`, the network's status, the commuter's planned trip).
 - [`src/app/twinRuntime.ts`](./src/app/twinRuntime.ts) & [`src/app/doorwayRuntime.ts`](./src/app/doorwayRuntime.ts) — Plain TypeScript runtime classes that advance the 60 FPS simulation outside React so moving vehicles and passengers cause **zero React re-renders**.
 
 ### E. 3D Scene, Instanced Jeepneys, Articulated People & Camera Rig (`src/scene/`)
@@ -185,19 +243,20 @@ Every step from the hardware specification is implemented and tested end-to-end:
   - Renders the Sensor Lab scene and attaches the physical `CabinCameraModel` + toggleable **Red FOV Detection Cone** (`showFov`) to the currently monitored jeepney in the Live Twin, feeding `PipRenderer` (`320×240` QVGA render target).
 
 ### F. UI Panels & Mobile Tracker (`src/ui/`, `src/tracker/`)
-- [`src/ui/Header.tsx`](./src/ui/Header.tsx) — Top navigation bar switching between **Live twin** and **Sensor lab**, backend/transport status badges, and phone tracker shortcut.
+- [`src/ui/Header.tsx`](./src/ui/Header.tsx) — Top navigation bar switching between **Live twin**, **Driver app**, **Commuter app** and **Sensor lab** (the **Profit & service lab** opens from the Live twin), view FPS, backend/transport status badges, and phone tracker shortcut.
 - [`src/ui/ViewControls.tsx`](./src/ui/ViewControls.tsx) — Floating viewport toolbar with direct **Jeepney `<select>` dropdown**, **Ride a jeepney / Next jeepney**, **Outside view**, **Inside view**, **Front POV**, **Show/Hide FOV cone**, **Whole route**, and **Street view** buttons.
 - [`src/ui/TwinPanel.tsx`](./src/ui/TwinPanel.tsx) — Right sidebar showing route info, live GPS phones on the road, clickable simulated fleet cards (with plate, speed, stop status, and `ESP-CAM` passenger count), and LTFRB fare calculator.
 - [`src/ui/DoorwayPanel.tsx`](./src/ui/DoorwayPanel.tsx) — Sensor Lab control panel comparing **Camera estimate** vs **Ground truth**, manual `+1 Board` / `-1 Alight` triggers, camera preset buttons (`Outside`, `ESP32-CAM`, `Rear door`), and `Show/Hide FOV cone` toggle.
-- [`src/ui/PipOverlay.tsx`](./src/ui/PipOverlay.tsx) — Bottom-right `320×240` Picture-in-Picture HUD drawing the live ESP32-S3-CAM video feed, red head bounding boxes, track IDs, doorway threshold box, and live `FPS / latency / riders / boarded / alighted` telemetry.
+- [`src/ui/PipOverlay.tsx`](./src/ui/PipOverlay.tsx) — Bottom-right `320×240` Picture-in-Picture HUD drawing the simulated ESP32-S3-CAM view, red head bounding boxes, track IDs, doorway threshold box, and live `FPS / latency / riders / boarded / alighted` telemetry.
 - [`src/ui/AssistPanel.tsx`](./src/ui/AssistPanel.tsx) — AI Assistant panel that sends the current twin snapshot to `/api/assist`.
-- [`src/tracker/TrackerApp.tsx`](./src/tracker/TrackerApp.tsx) & [`src/tracker/useGeolocation.ts`](./src/tracker/useGeolocation.ts) — Smartphone web app (`/track.html`) with live GPS status, accuracy/speed readouts, built-in simulated ride generator (for indoor testing), and explicit **"Confirm I'm on this jeepney"** / **"End trip"** controls.
+- [`src/tracker/TrackerApp.tsx`](./src/tracker/TrackerApp.tsx) & [`src/tracker/useGeolocation.ts`](./src/tracker/useGeolocation.ts) — Smartphone web app (`/track.html`) with live GPS status, accuracy/speed readouts, and explicit **"I'm on this jeepney"** / **"I got off"** controls.
+- [`src/tracker/simulatedRide.ts`](./src/tracker/simulatedRide.ts) & [`src/tracker/useSimulatedRide.ts`](./src/tracker/useSimulatedRide.ts) — The **simulated ride** for testing indoors: GPS fixes along Tungko – SM City Fairview at jeepney speed (waiting at the first stop, dwelling at each stop), with everyday phone GPS error, through the same filter and trip state machine. Its sessions are `sim-…`.
 
 ---
 
-## 6. Automated Test Suite (9 Test Files, 66 Tests)
+## 6. Automated Test Suite
 
-Run `npm test` to execute all 66 Vitest unit and integration tests:
+Run `npm test` to execute every Vitest unit and integration test (`src/**/*.test.ts`; the long multi-day simulations take about 10 minutes). Besides the network, flows, trip planning, fleet day cycle, advisory, economics, fuel and street-graph suites, these cover the original pipeline:
 - [`src/core/core.test.ts`](./src/core/core.test.ts) (16 tests) — Equirectangular projection, polyline map-matching, Ramer–Douglas–Peucker simplification, `GpsFilter` noise rejection, `stepTrip` state transitions, `LiveVehicle` smoothing/staleness, and LTFRB fare calculation.
 - [`src/core/doorway/pipeline.test.ts`](./src/core/doorway/pipeline.test.ts) (9 tests) — `CentroidTracker` identity preservation, occlusion handling, `DoorTransitions` confirmation, `SteadyCount` hysteresis, and `CabinPipeline` frame drops.
 - [`src/scene/people/personRig.test.ts`](./src/scene/people/personRig.test.ts) (8 tests) — Analytical two-bone arm IK holding the steering wheel rim within `< 2 mm` across wheel turns (`0, +0.6, -0.9 rad`), clockwise steering geometry, driver backrest alignment, step-climbing knee lift, and ducking under the `2.04 m` doorway header.
@@ -217,7 +276,8 @@ npm install
 npm run dev
 ```
 - Open **`http://localhost:5173`** for the 3D Digital Twin & Sensor Lab dashboard.
-- Open **`http://localhost:5173/track.html`** in a second tab to test the mobile GPS tracker immediately using the zero-config same-browser loopback.
+- Open **`http://localhost:5173/track.html`** in a second window to test the mobile GPS tracker immediately using the zero-config same-browser loopback; tick **Simulate a ride** to drive a phone jeepney along Tungko – SM City Fairview without leaving your desk.
+- `npm run dev` also serves the `/api` functions (assistant, voice), with their keys read from `.env` on the server side only.
 
 ### 2. Verify Typecheck, Lint, Tests & Production Build
 ```bash
@@ -228,7 +288,7 @@ npm run build
 ```
 
 ### 3. How to Interact with the 3D Twin & Sensor Lab
-- **Choose Any Jeepney:** Click any jeepney directly on the 3D road, pick one from the top toolbar dropdown, or click any vehicle card in the right **Simulated fleet** list.
+- **Choose Any Jeepney:** Click any jeepney directly on the 3D road, pick one from the top toolbar dropdown, or click any vehicle card in the right **Simulated fleet** list. The simulation's clock, speed, skip nights, other routes and **All jeepneys data** are at the bottom left of the map.
 - **Inspect Outside, Inside & Front Cab POV:**
   - While following a jeepney, **left-drag** to orbit 360° around the cabin, **scroll** to zoom right up to the windows, and **right-drag** to pan.
   - Click **Front POV** in the toolbar (or click the front hood/cab of the jeepney in 3D) to sit beside the driver and watch the live steering, pedals, gauges, and road ahead.

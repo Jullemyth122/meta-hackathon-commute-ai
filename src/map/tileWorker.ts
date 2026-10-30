@@ -39,7 +39,8 @@ scope.onmessage = async (e: MessageEvent<TileRequest>) => {
       return;
     }
     if (!res.ok) throw new Error(`Tile ${tile.z}/${tile.x}/${tile.y}: HTTP ${res.status}`);
-    const result = buildTile(await res.arrayBuffer(), tile, origin, route, pedestrianAreas);
+    const buffer = await res.arrayBuffer();
+    const result = buildTile(buffer, tile, origin, route, pedestrianAreas);
     scope.postMessage({ id, ok: true, result }, transferables(result));
   } catch (err) {
     scope.postMessage({ id, ok: false, error: err instanceof Error ? err.message : String(err) });

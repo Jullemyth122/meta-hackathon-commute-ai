@@ -23,7 +23,7 @@ import { useApp } from '@/app/store';
 import type { Livery } from '@/core/fleet/fleetSim';
 import type { LinkStatus, LiveVehicle } from '@/core/tracking/liveVehicle';
 import { JeepneyInstances, type GroundPose } from '../jeepney/JeepneyInstances';
-import { viewScale } from './viewScale';
+import { useScaledPose } from './viewScale';
 
 const STATUS_COLOR: Record<LinkStatus, Color> = {
   live: new Color('#3a9d5d'),
@@ -56,11 +56,12 @@ export function LiveVehicles({
 
   const poseAt = (i: number, out: GroundPose) => Object.assign(out, vehicles[i]!.pose);
 
-  useFrame((state) => {
+  // Placed per render pass: true size for the cabin camera, enlarged for the
+  // zoomed-out main view (see viewScale.ts).
+  useScaledPose((k) => {
     const mesh = beacons.current;
     if (!mesh) return;
     const now = Date.now();
-    const k = viewScale(state);
     scratch.scale.setScalar(k);
     vehicles.forEach((v, i) => {
       // Beacon over the roof, scaled with the jeepney.

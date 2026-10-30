@@ -12,6 +12,7 @@ import { initialTripState, stepTrip, type TripInput } from '@/core/tracking/trip
 import type { GpsFix, SessionMeta } from '@/core/tracking/types';
 import { getTransport, type Transport } from '@/net';
 import { useGeolocation, useWakeLock, type GeoError } from './useGeolocation';
+import { useSimulatedRide } from './useSimulatedRide';
 
 const GEO_ERROR_TEXT: Record<Exclude<GeoError, null>, string> = {
   unsupported: 'This browser has no GPS access.',
@@ -29,15 +30,20 @@ const PHASE_TEXT = {
   ENDED: 'Trip ended',
 } as const;
 
-function newSessionId(): string {
+/** `sim-…` for a simulated ride, so it never passes for field data. */
+function newSessionId(simulated: boolean): string {
   const day = new Date().toISOString().slice(0, 10);
-  return `field-${day}-${crypto.randomUUID().slice(0, 6)}`;
+  return `${simulated ? 'sim' : 'field'}-${day}-${crypto.randomUUID().slice(0, 6)}`;
 }
 
 export function TrackerApp() {
   const [vehicleId, setVehicleId] = useState('DEMO-JEEP-001');
   const [consented, setConsented] = useState(false);
+  /** Ticked before starting: a simulated ride instead of this phone's GPS. */
+  const [simulate, setSimulate] = useState(false);
   const [running, setRunning] = useState(false);
+  /** Whether the running session is simulated (fixed when it starts). */
+  const [simulated, setSimulated] = useState(false);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
   const [trip, dispatch] = useReducer(
     (s: typeof initialTripState, i: TripInput) => stepTrip(s, i),
@@ -86,15 +92,18 @@ export function TrackerApp() {
     [meta, transport],
   );
 
-  const geoError = useGeolocation(running, onFix);
+  const geoError = useGeolocation(running && !simulated, onFix);
+  const ride = useSimulatedRide(running && simulated, onFix);
   useWakeLock(running);
 
   function start() {
     filter.current.reset();
     counters.current = { sent: 0, rejected: 0 };
     dispatch({ kind: 'reset' });
+    setLast(null);
+    setSimulated(simulate);
     setMeta({
-      sessionId: newSessionId(),
+      sessionId: newSessionId(simulate),
       vehicleId: vehicleId.trim() || 'UNKNOWN',
       source: 'passenger-consented',
       startedAt: Date.now(),
@@ -138,13 +147,24 @@ export function TrackerApp() {
               is; I confirm which jeepney I am on.
             </span>
           </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={simulate}
+              onChange={(e) => setSimulate(e.target.checked)}
+            />
+            <span>
+              Simulate a ride (for testing indoors): GPS that drives along Tungko – SM City Fairview
+              at jeepney speed instead of this phone’s location.
+            </span>
+          </label>
           <button
             type="button"
             className="btn btn--primary btn--big"
-            disabled={!consented}
+            disabled={!consented && !simulate}
             onClick={start}
           >
-            Start session
+            {simulate ? 'Start simulated ride' : 'Start session'}
           </button>
           {transport?.kind === 'loopback' && (
             <p className="fine">
@@ -177,7 +197,15 @@ export function TrackerApp() {
             </span>
           </div>
 
-          {geoError && <p className="error">{GEO_ERROR_TEXT[geoError]}</p>}
+          {simulated && (
+            <p className="fine">
+              <b>Simulated ride</b>, not this phone’s location
+              {ride.status ? ` · ${ride.status}` : ''}. Keep this tab in view (its own window beside
+              the dashboard): browsers slow down timers in background tabs.
+            </p>
+          )}
+          {ride.error && <p className="error">Simulated ride failed: {ride.error}</p>}
+          {!simulated && geoError && <p className="error">{GEO_ERROR_TEXT[geoError]}</p>}
           {sendError && <p className="error">Could not send: {sendError}</p>}
 
           {(trip.phase === 'WAITING' || trip.phase === 'POSSIBLE_VEHICLE') && (
@@ -199,9 +227,11 @@ export function TrackerApp() {
             </button>
           )}
           <button type="button" className="btn btn--ghost" onClick={stop}>
-            Stop sharing location
+            {simulated ? 'Stop simulated ride' : 'Stop sharing location'}
           </button>
-          <p className="fine">Keep this screen open: phones pause GPS for background tabs.</p>
+          {!simulated && (
+            <p className="fine">Keep this screen open: phones pause GPS for background tabs.</p>
+          )}
         </section>
       )}
     </main>

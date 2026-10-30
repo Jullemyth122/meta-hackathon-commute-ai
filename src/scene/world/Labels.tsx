@@ -23,12 +23,27 @@ export interface SceneLabel {
   z: number;
   /** Lift with the symbol it names (stop pins grow when zoomed out). */
   scaleWithView?: boolean;
+  /** Shown instead of hiding beyond the kind's distance (⛽ for a gas station). */
+  farText?: string;
+  /** Background colour (a gas station's brand). */
+  tone?: string;
 }
 
 /** Hide a label beyond this camera distance (metres). */
 const MAX_DISTANCE: Record<string, number> = {
+  'demand-stop': 3_000,
+  'incoming-rider': 1_200,
   'passenger-area': 100,
-  terminal: Infinity,
+  /** A planned trip (TripPlanLayer.tsx): its ends and stops from anywhere, its ways closer. */
+  'trip-from': 60_000,
+  'trip-to': 60_000,
+  'trip-board': 60_000,
+  'trip-alight': 60_000,
+  'trip-way': 15_000,
+  /** Beyond this a gas station is just its ⛽ (farText), visible at any distance. */
+  fuel: 2_500,
+  'fuel-across': 2_500,
+  terminal: 15_000,
   city: 12_000,
   town: 9_000,
   suburb: 6_000,
@@ -36,6 +51,9 @@ const MAX_DISTANCE: Record<string, number> = {
   village: 2_500,
   quarter: 1_800,
 };
+
+/** Beyond this even a short form (⛽) hides: from over Metro Manila they are only clutter. */
+const FAR_TEXT_MAX_M = 12_000;
 
 export function Labels({
   labels,
@@ -67,6 +85,7 @@ export function Labels({
         el.className = `scene-label scene-label--${l.kind}`;
         el.textContent = l.text;
         el.hidden = true;
+        if (l.tone) el.style.background = l.tone;
         return el;
       }),
     [labels],
@@ -86,10 +105,17 @@ export function Labels({
       const l = labels[i]!;
       const el = nodes[i]!;
       v.set(l.x, l.scaleWithView ? l.y * k : l.y, l.z);
-      const far = v.distanceTo(camera.position) > (MAX_DISTANCE[l.kind] ?? 3_000);
+      const distance = v.distanceTo(camera.position);
+      const far = distance > (MAX_DISTANCE[l.kind] ?? 3_000);
+      const gone = far && (!l.farText || distance > FAR_TEXT_MAX_M);
+      // Far away, a label with a short form shrinks to it instead of vanishing.
+      if (l.farText) {
+        const text = far ? l.farText : l.text;
+        if (el.textContent !== text) el.textContent = text;
+      }
       v.project(camera);
       // z > 1: behind the camera. |x|,|y| > 1: off screen.
-      const hidden = far || v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
+      const hidden = gone || v.z > 1 || Math.abs(v.x) > 1.05 || Math.abs(v.y) > 1.05;
       if (el.hidden !== hidden) el.hidden = hidden;
       if (hidden) continue;
       const px = (v.x * 0.5 + 0.5) * size.width;

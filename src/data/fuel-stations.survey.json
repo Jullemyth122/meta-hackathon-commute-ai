@@ -1,0 +1,25 @@
+{
+  "about": "Gas stations the team has checked on the ground that OpenStreetMap does not have yet. scripts/fetch-fuel.mjs merges these into fuel-stations.json (a station already in OpenStreetMap within 40 m, same brand, is kept once). Better still: add the station to OpenStreetMap with the Every Door or StreetComplete phone app, so every map gets it, then re-run the script and delete it here.",
+  "rules": "Only positions you measured yourself: stand at the station's entrance and read your phone's GPS (Every Door, the CommuteAI tracker, or any GPS app). Never copy a position or details from Google Maps or another map: their terms forbid it, and it would make this data unusable.",
+  "format": {
+    "name": "Uno Fuel - Bankers",
+    "brand": "Uno Fuel",
+    "at": [121.0, 14.7],
+    "fuels": ["diesel", "octane_91"],
+    "hours": "24/7",
+    "surveyedBy": "your name",
+    "surveyedAt": "2026-10-28",
+    "note": "Northbound side of Quirino Highway"
+  },
+  "toCheck": [
+    "Jr Gasoline (Barracks Road)",
+    "Emperor Gas (Malaria Road)",
+    "JM Gas (Barangay 187)",
+    "RO-DEN Gas Station (Barangay 187)",
+    "Shellandia Shell Station (Quirino Highway, Barangay 182)",
+    "Uno Fuel - Bankers (Quirino Highway, Barangay 182)",
+    "Caltex Fersam Station (Quirino Highway, San Jose del Monte)",
+    "Shell, Quirino Highway, Pleasant Hills Gate 1 (may be one of the Shells already mapped nearby)"
+  ],
+  "stations": []
+}

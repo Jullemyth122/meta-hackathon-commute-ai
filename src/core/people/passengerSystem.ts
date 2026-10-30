@@ -1,7 +1,162 @@
 import type { FleetSim, FleetVehicle, PassengerService } from '../fleet/fleetSim';
+import { aheadOf, isTerminal, stopsAhead, type Route } from '../geo/routes';
+import { discountedKind, FARE_BY_VEHICLE, fareFor, type RiderKind } from '../fare';
+import type { FleetKind } from '../vehicles/specs';
+import { stopRoles, stopsAheadFor } from '../vehicles/stops';
 import { createRng } from '../math/random';
 import { newRiderPose, RiderMotion, type RiderPose, type Seat } from './riderMotion';
-import { arrivalPoint, queuePoint, stopPoint, STOP_CURB_M } from './stopLayout';
+import type { LocalPoint } from '../geo/projection';
+import { alongFrom, leavingSpot, pavementPoint, waitingSpot } from './stopLayout';
+import type { ApproachMode } from '../advisory/model';
+import { STOP_NEAR_M, type Catchments, type Lane } from './streetGraph';
+import { COMMUTE_BY_HOUR, LAST_RIDERS_S } from '../fleet/scenario';
+import { BASE_MIX, calibrate, drawKind, mixAt, schoolStop, type Mix } from './riderMix';
+
+/** New people fade in over this as they walk up to the stop. */
+const FADE_IN_S = 0.8;
+/** Arrived people stand a moment at the stop, then fade out and are gone. */
+const LINGER_S = 2.5;
+const FADE_OUT_S = 1.5;
+/** Someone who has just stepped off is still in the doorway for this long. */
+const CLEAR_DOOR_S = 1.2;
+/**
+ * Boarders climb in this far apart: one person on the step at a time, as at
+ * a real jeepney's back, but the next is already right behind them.
+ */
+const DOOR_HEADWAY_S = 1.4;
+/** Newcomers walk in along the pavement from this far up or down the road… */
+const WALK_IN_M = 15;
+/**
+ * …except this share, who come from further away: FIRST_MILE_MIN_M to
+ * FIRST_MILE_MAX_M along the road, the drivers and the operator seeing them
+ * on the way. Beyond TRICYCLE_FROM_M, TRICYCLE_SHARE of them take a tricycle.
+ * Assumptions, not survey figures.
+ */
+const FIRST_MILE_SHARE = 0.35;
+const FIRST_MILE_MIN_M = 100;
+const FIRST_MILE_MAX_M = 500;
+const TRICYCLE_FROM_M = 250;
+const TRICYCLE_SHARE = 0.5;
+
+/** Rider `id`'s own draw `k`, 0–1: fixed by id, so it takes nothing from the shared stream. */
+function idDraw(id: number, k: number): number {
+  const u = (Math.imul(id + 1, 0x85ebca6b) ^ Math.imul(k, 0xc2b2ae35)) >>> 0;
+  return (Math.imul(u ^ (u >>> 15), 0x2c1b3c6d) >>> 0) / 4_294_967_296;
+}
+
+/**
+ * Rider `id`'s first mile when the streets are not known (no map): along
+ * the route's pavement, fixed by id. Null for a walk-in.
+ */
+export function firstMileOf(id: number): { metres: number; mode: ApproachMode } | null {
+  if (idDraw(id, 1) >= FIRST_MILE_SHARE) return null;
+  const metres = FIRST_MILE_MIN_M + idDraw(id, 2) * (FIRST_MILE_MAX_M - FIRST_MILE_MIN_M);
+  const mode = metres > TRICYCLE_FROM_M && idDraw(id, 3) < TRICYCLE_SHARE ? 'tricycle' : 'walk';
+  return { metres, mode };
+}
+
+/**
+ * With the streets known (setStreets), everyone comes from a place of their
+ * own on the streets around their stop (Catchments.place: as many as live
+ * there), out to tricycle range. Up to WALK_ALL_M everyone walks; from there
+ * to TRICYCLE_ALL_M more and more take a tricycle; beyond it, everyone does.
+ */
+const WALK_ALL_M = 400;
+const TRICYCLE_ALL_M = 900;
+
+/** On foot or by tricycle, for `metres` to or from the stop (rider `id`'s draw `k`). */
+function modeFor(id: number, k: number, metres: number): ApproachMode {
+  const tricycle = (metres - WALK_ALL_M) / (TRICYCLE_ALL_M - WALK_ALL_M);
+  return idDraw(id, k) < tricycle ? 'tricycle' : 'walk';
+}
+
+/** Where on the street rider `id` goes by `mode`: a tricycle in its lane, on foot either edge (their own). */
+function laneFor(id: number, mode: ApproachMode): Lane {
+  if (mode === 'tricycle') return 'drive';
+  return idDraw(id, 14) < 0.5 ? 'left' : 'right';
+}
+
+/** Along `path` on foot, or seated in a tricycle. */
+function firstMile(mode: ApproachMode, path: readonly Point3[]): RiderMotion {
+  return mode === 'tricycle' ? RiderMotion.tricycle(path) : RiderMotion.walking(path);
+}
+
+/**
+ * Where people get off, relative (assumption): the ends of the line, malls
+ * and markets draw the most; a school draws students on their way there in
+ * the morning.
+ */
+const TERMINAL_PULL = 4;
+const PLACE_PULL = 2.5;
+const SCHOOL_PULL = 1.5;
+const STUDENT_TO_SCHOOL = 4;
+const PLACE = /SM|mall|market|palengke|plaza|hospital/i;
+
+/** A spot picked on the map joins the streets at the nearest street point within this (metres)… */
+const FROM_STREET_M = 250;
+/** …and without streets, the nearest stop is at most this far off (metres): a tricycle ride. */
+const MAX_FIRST_MILE_M = 3000;
+
+/** Where the commuter app's own rider boards, from a spot on the map (firstMileFrom). */
+export interface FirstMile {
+  stop: number;
+  direction: 1 | -1;
+  /** Metres from the spot to the stop, the way they will go. */
+  metres: number;
+  from: LocalPoint;
+  /** The street point they join the streets at; -1 when going straight. */
+  node: number;
+}
+
+/**
+ * The commute: whoever rides before MORNING_UNTIL_S is going to work (or
+ * school) and, RETURN_SHARE of them, comes back the same way in the evening.
+ * Each leaves work at a time of their own from 5 PM (LEAVE_WORK, by hour
+ * from 5 PM, most early in the evening) until the last riders of the day
+ * (LAST_RIDERS_S, 10:45 PM), and is home by about 11 PM; nobody waits at a
+ * stop before the jeepneys run.
+ */
+const MORNING_UNTIL_S = 13 * 3600;
+const RETURN_SHARE = 0.85;
+const LEAVE_WORK = [2, 2, 1.5, 1.1, 0.8, 0.45];
+const LEAVE_FROM_S = 17 * 3600;
+/** Changing jeepneys at a terminal on the way home is worth this much walking to avoid (metres). */
+const TRANSFER_M = 400;
+
+/** When rider `id` leaves work, seconds since midnight (before the last riders of the day). */
+function leaveWorkAt(id: number): number {
+  const total = LEAVE_WORK.reduce((a, b) => a + b, 0);
+  let u = idDraw(id, 40) * total;
+  let hour = 0;
+  while (hour < LEAVE_WORK.length - 1 && u >= LEAVE_WORK[hour]!) u -= LEAVE_WORK[hour++]!;
+  const at = LEAVE_FROM_S + (hour + idDraw(id, 41)) * 3600;
+  return at < LAST_RIDERS_S ? at : LEAVE_FROM_S + (LAST_RIDERS_S - LEAVE_FROM_S) * idDraw(id, 42);
+}
+
+/** Someone at work, to go home this evening. */
+interface Return {
+  /** When they leave work (seconds since midnight). */
+  dueS: number;
+  /** The stop they board at: the least walk from work (see planReturn). */
+  stop: number;
+  direction: 1 | -1;
+  /** The stop to get off at: the least walk home. */
+  homeStop: number;
+  /** A terminal to change jeepneys at on the way, when none goes all the way. */
+  via?: number;
+  homeNode: number;
+  /** Their workplace (street node), where they walk from. */
+  awayNode: number;
+  /** Who they are: the same person as this morning. */
+  kind: RiderKind;
+}
+/**
+ * A driver who sees someone hurrying to the stop waits for them, when there
+ * is a seat: anyone this many seconds or less from the stop…
+ */
+const RUNNER_WITHIN_S = 5;
+/** …but no longer than this in all, or a busy stop would never let them go. */
+const MAX_HOLD_S = 12;
 
 export type PassengerPhase =
   'approaching' | 'waiting' | 'boarding' | 'seated' | 'alighting' | 'walking' | 'arrived';
@@ -31,13 +186,78 @@ export interface Passenger {
   vehicleId: number | null;
   lastVehicleId: number | null;
   seat: number | null;
-  slot: number;
+  /** Where they stand while waiting at the stop (null once they board). */
+  spot: LocalPoint | null;
   inside: boolean;
   /** World pose outside; vehicle-local while boarding, riding or alighting. */
   pose: RiderPose;
   motion: RiderMotion | null;
   t: number;
   history: { phase: PassengerPhase; at: number }[];
+  /** First-mile travel mode; generated demand walks unless explicitly set. */
+  approachMode?: ApproachMode;
+  /** How they go on from the stop they get off at (a tricycle when far). */
+  leaveMode?: ApproachMode;
+  /** Going to work (and back tonight), or home from work; neither for other trips. */
+  tour?: 'out' | 'back';
+  /** Home, a street node (see setStreets): where an out trip started, a back trip ends. */
+  homeNode?: number;
+  /** Changing at a terminal on the way home: the stop to ride on to from there. */
+  thenTo?: number;
+  /**
+   * Who they are: as they said (the commuter app's own rider), else drawn
+   * when they set out, by the hour, day and stop (riderMix.ts); riderKindOf(id) if unset.
+   */
+  kind?: RiderKind;
+  /**
+   * Going straight to the stop from a spot on the map, the streets not
+   * known yet: put on the streets from where they are once they are (setStreets).
+   */
+  offStreets?: boolean;
+  /** The commuter app's own rider: their way to the stop, as they go it (drawn on the map). */
+  way?: readonly Point3[];
+}
+
+/**
+ * A synthetic first-mile path along the pavement. Sample bends instead of
+ * cutting across them; beyond a line terminal extend its tangent. The path
+ * has the requested length and is illustrative, not a surveyed walking route.
+ */
+function approachPath(
+  route: Route,
+  stop: number,
+  direction: 1 | -1,
+  target: LocalPoint,
+  metres: number,
+): Point3[] {
+  const targetAlong = alongFrom(route, stop, direction, target);
+  const base = pavementPoint(route, stop, direction, targetAlong, 2);
+  const reversed: Point3[] = [[target.x, 0, target.z]];
+  let remaining = metres;
+  for (let back = 5; remaining > 1e-8; back += 5) {
+    const along = targetAlong - back;
+    const p = pavementPoint(route, stop, direction, along, 2);
+    if (!route.loop) {
+      const s = route.stops[stop]!.s + along * direction;
+      const clamped = Math.max(0, Math.min(route.polyline.length, s));
+      const heading = route.polyline.headingAt(clamped, 4.3);
+      p.x += (s - clamped) * Math.cos(heading);
+      p.z -= (s - clamped) * Math.sin(heading);
+    }
+    p.x += target.x - base.x;
+    p.z += target.z - base.z;
+    const previous = reversed[reversed.length - 1]!;
+    const length = Math.hypot(p.x - previous[0], p.z - previous[2]);
+    if (length < 1e-8) continue;
+    const fraction = Math.min(1, remaining / length);
+    reversed.push([
+      previous[0] + (p.x - previous[0]) * fraction,
+      0,
+      previous[2] + (p.z - previous[2]) * fraction,
+    ]);
+    remaining -= length * fraction;
+  }
+  return reversed.reverse();
 }
 
 interface Service {
@@ -47,36 +267,185 @@ interface Service {
   active: number | null;
   terminal: boolean;
   turned: boolean;
+  /** Seconds spent holding for people hurrying to the stop. */
+  heldS: number;
+  /** Seconds lined up at its terminal waiting to fill (FILL). */
+  fillS: number;
+  /** When the next boarder may reach the step (the one before is in by then). */
+  doorFreeAt: number;
+  /** The head of the queue's boarding, worked out once while they wait their turn. */
+  next: { id: number; seat: number; motion: RiderMotion; inAfterS: number } | null;
+  /** False when letting riders off in a queue short of the stop: nobody gets on there. */
+  pickup: boolean;
+  /** For the stop log: riders off and on, and the fares they paid (centavos). */
+  off: number;
+  on: number;
+  fareCentavos: number;
 }
 
+/** One stop a jeepney made, for the operator's log (see PassengerSystem.log). */
+export interface StopEvent {
+  /** Seconds into the simulated day when it pulled away (FleetSim.elapsedS). */
+  atS: number;
+  vehicle: number;
+  stop: number;
+  off: number;
+  on: number;
+  fareCentavos: number;
+}
+/** Stop events kept: a busy hour of a 60-jeepney route; older ones are dropped. */
+const LOG_KEEP = 5000;
+
+/** Who rides and waits where, as of one tick (see tripsNow). */
+interface Trips {
+  at: number;
+  aboard: Map<number, number>;
+  gettingOff: Map<number, Set<number>>;
+  waiting: Map<number, Passenger[]>;
+  /** Jeepneys whose doorway is in use by someone getting off. */
+  doorBusy: Set<number>;
+  /** Jeepneys with someone on the step (getting off, or not yet in). */
+  onStep: Set<number>;
+}
+
+/**
+ * Who a rider is, for their fare, from the day's average mix (BASE_MIX: 65%
+ * regular, 20% student, 8% senior, 5% PWD, 2% pregnant), fixed by id. The
+ * twin's riders are drawn by the hour, day and stop instead (riderMix.ts).
+ * Students, seniors and PWD pay 20% less; pregnancy alone is no discount.
+ */
+export function riderKindOf(id: number): RiderKind {
+  return drawKind(BASE_MIX, (Math.imul(id + 1, 0x9e3779b1) >>> 0) / 4_294_967_296);
+}
+
+export const riderDiscounted = (id: number): boolean => discountedKind(riderKindOf(id));
+
+/** Who `r` is: as they said (the commuter app's own rider), else as drawn. */
+export const kindOf = (r: Passenger): RiderKind => r.kind ?? riderKindOf(r.id);
+
+/** A rider's fare in centavos, from where they got on to where they get off. */
+/** What rider `r` pays for the ride, by the vehicle's own fare rule (fare.ts). */
+function fareCentavosFor(route: Route, r: Passenger, vehicle: FleetKind): number {
+  const a = route.stops[r.originStop]!.s;
+  const b = route.stops[r.destinationStop]!.s;
+  const metres = route.loop ? aheadOf(route, a, b) : Math.abs(b - a);
+  return Math.round(
+    fareFor(metres / 1000, discountedKind(kindOf(r)), FARE_BY_VEHICLE[vehicle]) * 100,
+  );
+}
+
+/**
+ * Whether `v` takes riders on at `stop` (core/vehicles/stops.ts): a jeepney
+ * or bus at every stop of its route; a UV Express at its terminals only.
+ */
+function loadsAt(route: Route, v: FleetVehicle, stop: number): boolean {
+  return stopRoles(route, v.kind).loads[stop]!;
+}
+
+/**
+ * On a bus or UV Express route the far terminal draws this many times a
+ * jeepney terminal's riders: people take them to go all the way.
+ */
+const LONG_TRIP_PULL = 6;
+/** A driver at the terminal looks this far down the road for waiting riders (metres). */
+const FILL_LOOK_AHEAD_M = 3000;
+/** Stopped this close behind a vehicle filling at its terminal: next in line (metres). */
+const QUEUE_BEHIND_M = 30;
+
+/**
+ * Lining up at its terminal (see advanceService): each kind sets out once
+ * this share of its seats is taken, or after waiting this long for riders.
+ * A UV Express leaves full (it waits for its last passenger); a bus fills
+ * less (it picks up along the way); jeepneys most of the way ("hintay
+ * mapuno"). Assumptions to check against the terminals' dispatchers.
+ */
+const FILL: Record<FleetKind, { share: number; patienceS: number }> = {
+  jeepney: { share: 0.8, patienceS: 240 },
+  modern: { share: 0.8, patienceS: 240 },
+  bus: { share: 0.6, patienceS: 180 },
+  uv: { share: 1, patienceS: 900 },
+};
+
 export class PassengerSystem implements PassengerService {
+  readonly metrics = { boarded: 0, alighted: 0, completed: 0, waitSeconds: 0 };
   readonly passengers = new Map<number, Passenger>();
   readonly services = new Map<number, Service>();
+  /** Every stop made with someone off or on, oldest first (at most LOG_KEEP). */
+  readonly log: StopEvent[] = [];
   private readonly rng = createRng(53);
   private nextId = 1;
+  /** Riders who went home without a ride (still waiting when a day ended). */
+  gaveUp = 0;
   private clock = 0;
   private readonly vehiclePose: VehiclePose = { x: 0, z: 0, heading: 0 };
   private readonly scratch = newRiderPose();
-  private readonly arrivals = new Map<string, number>();
+  /** Stops each stop's riders can reach (by kind, stop and direction), for goesTo. */
+  private readonly callsAt = new Map<string, Set<number>>();
+  private trips: Trips = {
+    at: -1,
+    aboard: new Map(),
+    gettingOff: new Map(),
+    waiting: new Map(),
+    doorBusy: new Set(),
+    onStep: new Set(),
+  };
+  /** Riders whose trip is over and who have left the twin. */
+  delivered = 0;
+  /** The streets around the stops, once loaded from the map (null: the route's pavement). */
+  private streets: Catchments | null = null;
+  /** The last firstMileFrom answer: the commuter app asks for the same spot every tick. */
+  private firstMiles: { key: string; value: FirstMile | null } | null = null;
+  /** People at work, soonest to leave first (see Return). */
+  private readonly returns: Return[] = [];
+  /** Commuters who set out home this evening not yet set against the evening's arrivals. */
+  private goneHomeAhead = 0;
+  /** Per stop: whether it is a school's, and how many get off there, relative. */
+  private readonly schools: boolean[];
+  private readonly pull: number[];
+  /** Keeps a weekday's rider mix, over the commute profile, at BASE_MIX (riderMix.ts). */
+  private readonly mixCal: Mix;
 
   constructor(
     readonly fleet: FleetSim,
     readonly layouts: readonly PassengerLayout[],
     private readonly poseAt: (vehicle: number, out: VehiclePose) => VehiclePose,
   ) {
+    const route = fleet.route;
+    const n = route.stops.length;
+    // A bus or UV Express route: most ride all the way (to Cubao, Quiapo, Makati).
+    const longRoute = route.kind === 'bus' || route.kind === 'uv';
+    this.schools = route.stops.map((s) => schoolStop(s.name));
+    this.pull = route.stops.map(
+      (s, i) =>
+        (s.terminal ? TERMINAL_PULL * (longRoute ? LONG_TRIP_PULL : 1) : 1) *
+        (PLACE.test(s.name) ? PLACE_PULL : 1) *
+        (this.schools[i] ? SCHOOL_PULL : 1),
+    );
+    this.mixCal = calibrate(
+      BASE_MIX,
+      COMMUTE_BY_HOUR.flatMap((weight, hour) =>
+        this.schools.map((school) => ({ weight: weight / n, hour, school })),
+      ),
+    );
     fleet.vehicles.forEach((v) => {
       const layout = layouts[v.id]!;
       v.capacity = layout.seats.length;
       v.occupancy = Math.min(v.occupancy, v.capacity);
+      // Riders already on board got on at the stop just behind the jeepney…
+      const origin = route.loop
+        ? (v.nextStop - 1 + n) % n
+        : Math.max(0, Math.min(n - 1, v.nextStop - v.direction));
+      // …and get off at the next stop it calls at or any later one, up to
+      // its next terminal.
+      const roles = stopRoles(route, v.kind);
+      const options = roles.terminal[v.nextStop]
+        ? [v.nextStop]
+        : [
+            ...(roles.serves[v.nextStop] ? [v.nextStop] : []),
+            ...stopsAheadFor(route, v.kind, v.nextStop, v.direction),
+          ];
       for (let k = 0; k < v.occupancy; k++) {
-        const origin = Math.max(
-          0,
-          Math.min(fleet.route.stops.length - 1, v.nextStop - v.direction),
-        );
         const r = this.create(origin, v.direction, 'seated');
-        const options = fleet.route.stops
-          .map((_, i) => i)
-          .filter((i) => (i - v.nextStop) * v.direction >= 0);
         r.destinationStop = options[Math.floor(this.rng() * options.length)]!;
         r.vehicleId = r.lastVehicleId = v.id;
         r.inside = true;
@@ -90,20 +459,39 @@ export class PassengerSystem implements PassengerService {
     fleet.passengerService = this;
   }
 
-  private create(stop: number, direction: 1 | -1, phase: PassengerPhase): Passenger {
-    const options = this.fleet.route.stops
-      .map((_, i) => i)
-      .filter((i) => (i - stop) * direction > 0);
+  /**
+   * A new rider at `stop`: `kind` when known (the same person going home),
+   * else drawn for the hour, day and stop; going to a stop ahead, as many
+   * get off there (see the pulls).
+   */
+  private create(
+    stop: number,
+    direction: 1 | -1,
+    phase: PassengerPhase,
+    kind?: RiderKind,
+  ): Passenger {
+    const id = this.nextId++;
+    const hour = this.fleet.timeOfDay / 3600;
+    const where = { hour, day: this.fleet.dayNumber - 1, school: this.schools[stop]! };
+    const who = kind ?? drawKind(mixAt(BASE_MIX, where, this.mixCal), idDraw(id, 50));
+    const options = stopsAhead(this.fleet.route, stop, direction);
+    const weights = options.map(
+      (s) =>
+        this.pull[s]! * (who === 'student' && hour < 13 && this.schools[s] ? STUDENT_TO_SCHOOL : 1),
+    );
+    let u = this.rng() * weights.reduce((a, b) => a + b, 0);
+    const destination = options.find((_, i) => (u -= weights[i]!) < 0) ?? options.at(-1);
     const r: Passenger = {
-      id: this.nextId++,
+      id,
+      kind: who,
       originStop: stop,
-      destinationStop: options[Math.floor(this.rng() * options.length)] ?? stop,
+      destinationStop: destination ?? stop,
       direction,
       phase,
       vehicleId: null,
       lastVehicleId: null,
       seat: null,
-      slot: 0,
+      spot: null,
       inside: false,
       pose: newRiderPose(),
       motion: null,
@@ -111,49 +499,389 @@ export class PassengerSystem implements PassengerService {
       history: [{ phase, at: this.clock }],
     };
     this.passengers.set(r.id, r);
+    this.trips.at = -1;
     return r;
   }
 
-  demand(stop: number, count: number, initial = false): void {
-    for (let i = 0; i < count && this.fleet.waiting[stop]! < 40; i++) {
-      const direction =
-        stop === 0
-          ? 1
-          : stop === this.fleet.route.stops.length - 1
-            ? -1
-            : this.rng() < 0.5
-              ? 1
-              : -1;
-      const used = new Set(
-        [...this.passengers.values()]
-          .filter(
-            (r) =>
-              r.originStop === stop &&
-              r.direction === direction &&
-              ['approaching', 'waiting', 'boarding'].includes(r.phase),
-          )
-          .map((r) => r.slot),
+  /**
+   * Where people come from and go to: the streets around the stops, once
+   * loaded from the map (see streetGraph.ts); null for the route's pavement.
+   * Riders already on their way keep the paths they have, except anyone
+   * going straight from a spot on the map (offStreets): from where they are
+   * now, they go by the streets instead.
+   */
+  setStreets(streets: Catchments | null): void {
+    this.streets = streets;
+    this.returns.length = 0;
+    this.firstMiles = null;
+    if (!streets) return;
+    for (const r of this.passengers.values()) {
+      if (!r.offStreets || r.phase !== 'approaching' || !r.spot) continue;
+      r.offStreets = undefined;
+      const mode = r.approachMode ?? 'walk';
+      const path = streets.wayFrom(
+        r.pose,
+        r.originStop,
+        r.direction,
+        r.spot,
+        laneFor(r.id, mode),
+        FROM_STREET_M,
       );
-      let slot = 0;
-      while (used.has(slot)) slot++;
-      const r = this.create(stop, direction, initial ? 'waiting' : 'approaching');
-      r.slot = slot;
-      const target = queuePoint(this.fleet.route, stop, direction, slot);
-      if (initial) Object.assign(r.pose, target);
-      else {
-        const start = stopPoint(this.fleet.route, stop, direction, -8, STOP_CURB_M + 2);
-        r.motion = RiderMotion.walking([
-          [start.x, 0, start.z],
-          [target.x, 0, target.z],
-        ]);
-        r.motion.poseAt(0, r.pose);
-      }
-      this.fleet.waiting[stop]!++;
+      if (!path) continue;
+      r.motion = firstMile(mode, path);
+      r.way = path;
+      r.t = 0;
+      r.motion.poseAt(0, r.pose);
     }
   }
 
-  arrive(vehicle: FleetVehicle, stop: number): void {
-    const terminal = stop === 0 || stop === this.fleet.route.stops.length - 1;
+  /**
+   * `count` people arrive to ride from `stop`. In the evening, commuters set
+   * out home at times of their own (update); each one stands in for one of
+   * these arrivals, so the day's volume stays the scenario's while people go
+   * home from where they went this morning.
+   */
+  demand(stop: number, count: number, initial = false): void {
+    for (let i = 0; i < count; i++) {
+      if (!initial && this.goneHomeAhead > 0 && this.fleet.timeOfDay >= LEAVE_FROM_S)
+        this.goneHomeAhead--;
+      else this.spawn(stop, initial);
+    }
+  }
+
+  /** People already waiting at `stop`, going `direction`: newcomers stand clear of them. */
+  private othersAt(stop: number, direction: 1 | -1): LocalPoint[] {
+    const others: LocalPoint[] = [];
+    for (const o of this.passengers.values())
+      if (o.spot && o.originStop === stop && o.direction === direction) others.push(o.spot);
+    return others;
+  }
+
+  /** One new rider at `stop`, from home (or wherever) to a stop ahead. */
+  private spawn(stop: number, initial: boolean): void {
+    const route = this.fleet.route;
+    // A loop stop is served one way only; a line stop both ways, except
+    // at its two ends.
+    const direction: 1 | -1 = route.loop
+      ? 1
+      : stop === 0
+        ? 1
+        : stop === route.stops.length - 1
+          ? -1
+          : this.rng() < 0.5
+            ? 1
+            : -1;
+    // Wherever there is room in the crowd, a step away from everyone else.
+    const others = this.othersAt(stop, direction);
+    const r = this.create(stop, direction, initial ? 'waiting' : 'approaching');
+    const target = waitingSpot(route, stop, direction, r.id, others);
+    r.spot = target;
+    if (initial) Object.assign(r.pose, target);
+    else if (!this.fromStreets(r, target)) this.alongPavement(r, target);
+    this.fleet.waiting[stop]!++;
+  }
+
+  /** Someone leaving work: from there along the streets to the stop they ride home from. */
+  private goHome(ret: Return): void {
+    const r = this.create(ret.stop, ret.direction, 'approaching', ret.kind);
+    r.destinationStop = ret.via ?? ret.homeStop;
+    if (ret.via !== undefined) r.thenTo = ret.homeStop;
+    r.tour = 'back';
+    r.homeNode = ret.homeNode;
+    const others = this.othersAt(ret.stop, ret.direction);
+    const target = waitingSpot(this.fleet.route, ret.stop, ret.direction, r.id, others);
+    r.spot = target;
+    if (!this.fromStreets(r, target, ret.awayNode)) this.alongPavement(r, target);
+    this.fleet.waiting[ret.stop]!++;
+  }
+
+  /**
+   * Set `r` off along the streets to `target` at its stop: from `node`
+   * (their workplace, going home), else from a place of their own around the
+   * stop. On foot, or by tricycle from far. False without streets there.
+   * Someone setting out in the morning is going to work from home.
+   */
+  private fromStreets(r: Passenger, target: LocalPoint, node?: number): boolean {
+    const c = this.streets;
+    if (!c) return false;
+    const from = node ?? c.place(r.originStop, r.direction, idDraw(r.id, 10))?.node;
+    if (from === undefined) return false;
+    const metres = c.stopOf(from, r.direction)?.metres;
+    if (metres === undefined) return false;
+    r.approachMode = modeFor(r.id, 12, metres);
+    const path = c.toStop(from, r.direction, target, laneFor(r.id, r.approachMode));
+    if (!path) return false;
+    r.motion = firstMile(r.approachMode, path);
+    r.motion.poseAt(0, r.pose);
+    if (r.tour === undefined && this.fleet.timeOfDay < MORNING_UNTIL_S) {
+      r.tour = 'out';
+      r.homeNode = from;
+    }
+    return true;
+  }
+
+  /** Without streets: along the route's pavement, from further along it or the last few metres. */
+  private alongPavement(r: Passenger, target: LocalPoint): void {
+    const route = this.fleet.route;
+    const { originStop: stop, direction } = r;
+    const far = firstMileOf(r.id);
+    if (far) {
+      r.approachMode = far.mode;
+      r.motion = firstMile(far.mode, approachPath(route, stop, direction, target, far.metres));
+    } else {
+      // From up or down the road, so people do not all walk in from one side.
+      const from = r.id % 2 === 0 ? -WALK_IN_M : WALK_IN_M;
+      const start = pavementPoint(route, stop, direction, from, 1 + (r.id % 5));
+      r.motion = RiderMotion.walking([
+        [start.x, 0, start.z],
+        [target.x, 0, target.z],
+      ]);
+    }
+    r.motion.poseAt(0, r.pose);
+  }
+
+  /**
+   * Off at `stop`: the way on from `from` (the kerb) along the side streets,
+   * home for someone coming back from work, else to a place of their own
+   * (work, in the morning). Null without streets there. Someone off to work
+   * is planned to come back this evening (planReturn).
+   */
+  private toStreets(r: Passenger, stop: number, from: LocalPoint): RiderMotion | null {
+    const c = this.streets;
+    if (!c) return null;
+    const node =
+      (r.tour === 'back' ? r.homeNode : undefined) ??
+      c.place(stop, r.direction, idDraw(r.id, 20))?.node;
+    if (node === undefined) return null;
+    const metres = c.stopOf(node, r.direction)?.metres;
+    if (metres === undefined) return null;
+    const leaveMode = modeFor(r.id, 22, metres);
+    const path = c.fromStop(node, r.direction, from, laneFor(r.id, leaveMode));
+    if (!path) return null;
+    if (r.tour === 'out') this.planReturn(r, node);
+    r.leaveMode = leaveMode;
+    // A tricycle waits at the kerb; on foot, from the jeepney's step.
+    return leaveMode === 'tricycle'
+      ? RiderMotion.tricycle(path)
+      : RiderMotion.walking([[r.pose.x, 0, r.pose.z], ...path]);
+  }
+
+  /**
+   * `r`, off for work at street node `work`: home this evening, unless they
+   * go some other way. Home is reached from the stop its streets lead to,
+   * work from the one its streets lead to (Catchments.stopOf); they ride
+   * between whichever stops by those (within STOP_NEAR_M: often the one
+   * across the road) a jeepney runs between, least walking first. Where none
+   * does (on a loop, one going on to a terminal first), they change at the
+   * terminal, which counts as TRANSFER_M more walking.
+   */
+  private planReturn(r: Passenger, work: number): void {
+    const c = this.streets;
+    const home = r.homeNode;
+    if (!c || home === undefined || idDraw(r.id, 30) >= RETURN_SHARE) return;
+    const route = this.fleet.route;
+    const apart = (a: LocalPoint, b: LocalPoint) => Math.hypot(a.x - b.x, a.z - b.z);
+    type Ride = Pick<Return, 'stop' | 'direction' | 'homeStop' | 'via'>;
+    let best: Ride | null = null;
+    let least = Infinity;
+    // Going each way the route runs: the stops work and home lead to, and those by them.
+    const pairs = c.directions.flatMap((d) => {
+      const atWork = c.stopOf(work, d);
+      const atHome = c.stopOf(home, d);
+      if (!atWork || !atHome) return [];
+      const homeStops = c.slotsNear(atHome.spot, STOP_NEAR_M, d);
+      return c
+        .slotsNear(atWork.spot, STOP_NEAR_M, d)
+        .map((board) => ({ board, atWork, atHome, homeStops }));
+    });
+    for (const { board, atWork, atHome, homeStops } of pairs) {
+      const walked = apart(board.spot, atWork.spot);
+      const ahead = stopsAhead(route, board.stop, board.direction);
+      const end = ahead[ahead.length - 1];
+      const via = route.loop && end !== undefined && isTerminal(route, end) ? end : undefined;
+      for (const alight of homeStops) {
+        if (alight.direction !== board.direction) continue;
+        const cost = walked + apart(alight.spot, atHome.spot);
+        const ride: Ride = { stop: board.stop, direction: board.direction, homeStop: alight.stop };
+        if (ahead.includes(alight.stop)) {
+          if (cost < least) [least, best] = [cost, ride];
+        } else if (
+          via !== undefined &&
+          cost + TRANSFER_M < least &&
+          stopsAhead(route, via, board.direction).includes(alight.stop)
+        )
+          [least, best] = [cost + TRANSFER_M, { ...ride, via }];
+      }
+    }
+    if (!best) return;
+    const ret: Return = {
+      dueS: leaveWorkAt(r.id),
+      ...best,
+      homeNode: home,
+      awayNode: work,
+      kind: kindOf(r),
+    };
+    let i = this.returns.length;
+    while (i > 0 && this.returns[i - 1]!.dueS > ret.dueS) i--;
+    this.returns.splice(i, 0, ret);
+  }
+
+  /**
+   * The commuter app's own rider ("you"): getting to `stop` from `distanceM`
+   * away on foot or by tricycle, going to `destination`; or, with `from`,
+   * from that very spot on the map (see firstMileFrom: then `stop` and
+   * `distanceM` are worked out from it). `kind` is who they are, for the
+   * fare. From then on they are a rider like any other: queued in arrival
+   * order, waited for when close, boarded first come first served. Returns
+   * their id, for the app to follow.
+   */
+  join(
+    stop: number,
+    destination: number,
+    distanceM: number,
+    mode: ApproachMode = 'walk',
+    opts: { kind?: RiderKind; from?: LocalPoint; keepStop?: boolean } = {},
+  ): number {
+    const route = this.fleet.route;
+    // From a spot: the stop it leads to; with `keepStop`, to `stop` as given
+    // (the trip planner's choice), from that spot all the same.
+    const fromHere =
+      opts.from && !opts.keepStop ? this.firstMileFrom(opts.from, destination) : null;
+    if (opts.from && !opts.keepStop && !fromHere)
+      throw new RangeError('No stop on this route goes there from here.');
+    if (fromHere) [stop, distanceM] = [fromHere.stop, fromHere.metres];
+    if (!route.stops[stop] || !route.stops[destination] || !Number.isFinite(distanceM))
+      throw new RangeError('Choose valid stops and a finite first-mile distance.');
+    const direction: 1 | -1 =
+      fromHere?.direction ??
+      (route.loop || route.stops[destination]!.s >= route.stops[stop]!.s ? 1 : -1);
+    const first: FirstMile | null =
+      fromHere ??
+      (opts.from
+        ? { stop, direction, metres: distanceM, from: opts.from, node: this.streets ? 0 : -1 }
+        : null);
+    const others = this.othersAt(stop, direction);
+    const remaining = Math.max(0, distanceM);
+    const r = this.create(stop, direction, remaining === 0 ? 'waiting' : 'approaching');
+    r.approachMode = mode;
+    if (opts.kind) r.kind = opts.kind;
+    if (stopsAhead(route, stop, direction).includes(destination)) r.destinationStop = destination;
+    const target = waitingSpot(route, stop, direction, r.id, others);
+    r.spot = target;
+    if (remaining === 0) Object.assign(r.pose, target);
+    else {
+      // From the spot chosen; else from a place on the side streets about
+      // that far away, when they are known.
+      const lane = laneFor(r.id, mode);
+      const place = first ? null : this.streets?.placeAbout(stop, direction, remaining, 0.5);
+      const path =
+        (first && this.pathFrom(r, first, target, lane)) ??
+        (place && this.streets!.toStop(place.node, direction, target, lane)) ??
+        approachPath(route, stop, direction, target, remaining);
+      r.motion = firstMile(mode, path);
+      r.way = path;
+      r.motion.poseAt(0, r.pose);
+    }
+    this.fleet.waiting[stop]!++;
+    return r.id;
+  }
+
+  /**
+   * From a spot on the map to `destination`: the stop to board at (going
+   * the way that reaches it), and how far it is. When the streets are known
+   * and the spot is within FROM_STREET_M of one: along the streets to the
+   * stop they lead to, or else to the nearest by street that goes there.
+   * Otherwise straight to the nearest such stop. Null when no stop goes
+   * there, or the nearest is beyond tricycle range.
+   */
+  firstMileFrom(from: LocalPoint, destination: number): FirstMile | null {
+    const key = `${from.x},${from.z},${destination}`;
+    if (this.firstMiles?.key !== key)
+      this.firstMiles = { key, value: this.findFirstMile(from, destination) };
+    return this.firstMiles.value;
+  }
+
+  private findFirstMile(from: LocalPoint, destination: number): FirstMile | null {
+    const route = this.fleet.route;
+    if (!route.stops[destination]) return null;
+    const goes = (stop: number, direction: 1 | -1) =>
+      stop !== destination && stopsAhead(route, stop, direction).includes(destination);
+    const c = this.streets;
+    const at = c?.onStreets(from, FROM_STREET_M);
+    let best: FirstMile | null = null;
+    if (c && at) {
+      const hop = Math.hypot(at.at.x - from.x, at.at.z - from.z);
+      for (const direction of c.directions)
+        for (const node of [at.a, at.b]) {
+          const s = c.stopOf(node, direction);
+          if (!s) continue;
+          // Its stop, or (squeezed between others) one by it that goes there.
+          const board = [s, ...c.slotsNear(s.spot, STOP_NEAR_M, direction)].find((b) =>
+            goes(b.stop, direction),
+          );
+          if (!board) continue;
+          const along = Math.hypot(c.graph.x[node]! - at.at.x, c.graph.z[node]! - at.at.z);
+          const metres =
+            hop + along + s.metres + Math.hypot(board.spot.x - s.spot.x, board.spot.z - s.spot.z);
+          if (!best || metres < best.metres)
+            best = { stop: board.stop, direction, metres, from, node };
+        }
+      if (best) return best;
+      // Its own streets lead to no stop going there: the nearest by street that does.
+      const near = c.nearestByStreet(from, FROM_STREET_M, goes);
+      if (near)
+        return {
+          stop: near.stop,
+          direction: near.direction,
+          metres: near.metres,
+          from,
+          node: at.a,
+        };
+    }
+    // Straight to the nearest stop that goes there.
+    const directions: ReadonlyArray<1 | -1> = route.loop ? [1] : [1, -1];
+    for (let stop = 0; stop < route.stops.length; stop++)
+      for (const direction of directions) {
+        if (!goes(stop, direction)) continue;
+        const p = route.polyline.pointAt(route.stops[stop]!.s);
+        const metres = Math.hypot(p.x - from.x, p.z - from.z);
+        if (metres <= MAX_FIRST_MILE_M && (!best || metres < best.metres))
+          best = { stop, direction, metres, from, node: -1 };
+      }
+    return best;
+  }
+
+  /**
+   * The way for rider `r` from a spot on the map (firstMileFrom) to `target`
+   * at its stop, in `lane`: by the streets when known, else straight (and
+   * onto the streets once they are: setStreets).
+   */
+  private pathFrom(r: Passenger, m: FirstMile, target: LocalPoint, lane: Lane): Point3[] {
+    const streets =
+      m.node >= 0
+        ? this.streets?.wayFrom(m.from, m.stop, m.direction, target, lane, FROM_STREET_M)
+        : null;
+    if (streets) return streets;
+    r.offStreets = true;
+    return [
+      [m.from.x, 0, m.from.z],
+      [target.x, 0, target.z],
+    ];
+  }
+
+  /** Withdraw a personal trip before boarding; never remove an onboard rider. */
+  cancel(id: number): boolean {
+    const r = this.passengers.get(id);
+    if (!r || r.vehicleId !== null || (r.phase !== 'approaching' && r.phase !== 'waiting'))
+      return false;
+    this.passengers.delete(id);
+    this.fleet.waiting[r.originStop] = Math.max(0, (this.fleet.waiting[r.originStop] ?? 0) - 1);
+    this.trips.at = -1;
+    return true;
+  }
+
+  arrive(vehicle: FleetVehicle, stop: number, dropOffOnly = false): void {
+    const terminal = stopRoles(this.fleet.route, vehicle.kind).terminal[stop]!;
     const exits = [...this.passengers.values()].filter(
       (r) =>
         r.vehicleId === vehicle.id &&
@@ -172,11 +900,71 @@ export class PassengerSystem implements PassengerService {
       active: null,
       terminal,
       turned: false,
+      heldS: 0,
+      fillS: 0,
+      doorFreeAt: 0,
+      next: null,
+      pickup: !dropOffOnly,
+      off: 0,
+      on: 0,
+      fareCentavos: 0,
     });
+  }
+
+  pickUp(vehicle: FleetVehicle, stop: number): void {
+    if (this.services.has(vehicle.id)) return;
+    this.services.set(vehicle.id, {
+      stop,
+      exits: [],
+      boarders: null,
+      active: null,
+      terminal: stopRoles(this.fleet.route, vehicle.kind).terminal[stop]!,
+      turned: true, // it turned round, if it had to, when it first served the stop
+      heldS: 0,
+      fillS: 0,
+      doorFreeAt: 0,
+      next: null,
+      pickup: true,
+      off: 0,
+      on: 0,
+      fareCentavos: 0,
+    });
+  }
+
+  /** A stop done: into the log if anyone got off or on, and the jeepney may go. */
+  private finish(v: FleetVehicle, s: Service): void {
+    this.services.delete(v.id);
+    if (s.off + s.on === 0) return;
+    this.log.push({
+      atS: this.fleet.elapsedS,
+      vehicle: v.id,
+      stop: s.stop,
+      off: s.off,
+      on: s.on,
+      fareCentavos: s.fareCentavos,
+    });
+    if (this.log.length > LOG_KEEP) this.log.splice(0, this.log.length - LOG_KEEP);
   }
 
   busy(vehicle: number): boolean {
     return this.services.has(vehicle);
+  }
+
+  /**
+   * The day is over (FleetSim.dayCycle): whoever is still waiting, or still
+   * walking to a stop, has gone home some other way. They leave the twin;
+   * riders on board are already off (every jeepney parked at a terminal).
+   */
+  endOfDay(): void {
+    // Anyone still at work went home some other way.
+    this.returns.length = 0;
+    this.goneHomeAhead = 0;
+    for (const r of [...this.passengers.values()]) {
+      if (r.phase !== 'waiting' && r.phase !== 'approaching') continue;
+      this.fleet.waiting[r.originStop] = Math.max(0, (this.fleet.waiting[r.originStop] ?? 0) - 1);
+      this.passengers.delete(r.id);
+      this.gaveUp++;
+    }
   }
 
   status(vehicle: number): string {
@@ -187,28 +975,62 @@ export class PassengerSystem implements PassengerService {
         : 'Stopped, ready to depart';
     const active = s.active === null ? null : this.passengers.get(s.active);
     if (active?.phase === 'alighting' || s.exits.length) return 'Stopped, passengers getting off';
-    if (active?.phase === 'boarding') return 'Stopped, passenger boarding';
+    let boarding = 0;
+    for (const r of this.passengers.values())
+      if (r.vehicleId === vehicle && r.phase === 'boarding') boarding++;
+    if (boarding > 0) return `Stopped, ${boarding} boarding`;
+    if (s.heldS > 0) return 'Stopped, waiting for someone running to the stop';
     return 'Stopped, waiting for passengers to clear';
   }
 
   update(dt: number): void {
     this.clock += dt;
+    // Commuters leave work at their own times, and stand in for the evening's arrivals (demand).
+    // Not after the last riders of the day: anyone still at work then goes home some other way.
+    const now = this.fleet.timeOfDay;
+    while (
+      now >= LEAVE_FROM_S &&
+      now < LAST_RIDERS_S &&
+      now >= (this.returns[0]?.dueS ?? Infinity)
+    ) {
+      this.goHome(this.returns.shift()!);
+      this.goneHomeAhead++;
+    }
     for (const r of this.passengers.values()) {
       if (!r.motion) continue;
       r.t = Math.min(r.t + dt, r.motion.duration);
       r.motion.poseAt(r.t, r.pose);
-      if (r.vehicleId !== null) r.inside = this.layouts[r.vehicleId]!.isInside(r.pose);
+      if (r.vehicleId !== null) {
+        const inside = this.layouts[r.vehicleId]!.isInside(r.pose);
+        if (inside !== r.inside) {
+          if (inside) {
+            this.metrics.boarded++;
+            this.metrics.waitSeconds +=
+              this.clock - (r.history.find((h) => h.phase === 'waiting')?.at ?? r.history[0]!.at);
+          } else this.metrics.alighted++;
+        }
+        r.inside = inside;
+      }
       if (r.t < r.motion.duration) continue;
       r.motion = null;
-      if (r.phase === 'approaching') this.transition(r, 'waiting');
-      else if (r.phase === 'boarding') this.transition(r, 'seated');
+      if (r.phase === 'approaching') {
+        this.transition(r, 'waiting');
+        r.pose.sit = 0;
+      } else if (r.phase === 'boarding') this.transition(r, 'seated');
       else if (r.phase === 'alighting') this.walkAway(r);
       else if (r.phase === 'walking') this.transition(r, 'arrived');
       r.pose.walk = 0;
     }
+    // Trips that are over leave the twin (and its data) once faded out.
+    for (const r of this.passengers.values()) {
+      if (r.phase === 'arrived' && this.visibility(r) === 0) {
+        this.passengers.delete(r.id);
+        this.delivered++;
+      }
+    }
     for (const v of this.fleet.vehicles) {
       const service = this.services.get(v.id);
-      if (service) this.advanceService(v, service);
+      if (service) this.advanceService(v, service, dt);
       v.occupancy = 0;
     }
     for (const r of this.passengers.values()) {
@@ -219,72 +1041,314 @@ export class PassengerSystem implements PassengerService {
     }
   }
 
-  private advanceService(v: FleetVehicle, s: Service): void {
+  /**
+   * How visible rider `r` is, 0 to 1: fading in while walking up to the
+   * stop, fading out once arrived. The renderer draws it; update() removes
+   * arrived riders at 0.
+   */
+  visibility(r: Passenger): number {
+    if (r.phase === 'approaching') return Math.min(1, (this.clock - r.history[0]!.at) / FADE_IN_S);
+    if (r.phase !== 'arrived') return 1;
+    const since = this.clock - r.history[r.history.length - 1]!.at - LINGER_S;
+    return Math.max(0, Math.min(1, 1 - since / FADE_OUT_S));
+  }
+
+  private advanceService(v: FleetVehicle, s: Service, dt: number): void {
+    // Getting off: one person in the doorway at a time, the next one goes as
+    // soon as the one before is out.
     if (s.active !== null) {
-      const r = this.passengers.get(s.active)!;
-      if (r.phase === 'boarding' || r.phase === 'alighting') return;
+      const r = this.passengers.get(s.active);
+      if (r?.phase === 'alighting' && r.inside) return;
       s.active = null;
     }
     const exiting = s.exits.shift();
     if (exiting !== undefined) {
       const r = this.passengers.get(exiting)!;
       this.transition(r, 'alighting');
+      // The fare, paid getting off: by ride distance, 20% off for the eligible.
+      const fare = fareCentavosFor(this.fleet.route, r, v.kind);
+      v.day.fareCentavos += fare;
+      v.day.riders++;
+      s.fareCentavos += fare;
+      s.off++;
       r.motion = this.layouts[v.id]!.alight(r.seat!);
       r.t = 0;
       s.active = r.id;
       return;
     }
-    const pose = this.poseAt(v.id, this.vehiclePose);
-    if (
-      [...this.passengers.values()].some(
-        (r) =>
-          r.lastVehicleId === v.id &&
-          r.phase === 'walking' &&
-          Math.hypot(r.pose.x - pose.x, r.pose.z - pose.z) < 7,
-      )
-    )
+    // Boarders wait until everyone getting off is down and clear of the doorway.
+    if (this.tripsNow().doorBusy.has(v.id)) return;
+    // Let off in a queue short of the stop: on again as soon as they are clear.
+    if (!s.pickup) {
+      if (!this.tripsNow().onStep.has(v.id)) this.finish(v, s);
       return;
+    }
+    // On a line the jeepney turns round at a terminal; on a loop the road
+    // brings it back, so it keeps its direction.
     if (s.terminal && !s.turned) {
-      v.direction = v.direction === 1 ? -1 : 1;
+      if (!this.fleet.route.loop) v.direction = v.direction === 1 ? -1 : 1;
       s.turned = true;
     }
+    // Getting on: everyone it is taking heads for the back at once, and they
+    // climb in one after another, DOOR_HEADWAY_S apart, in the order they
+    // came (first come, first served). Whoever is further away sets off
+    // earlier, so nobody stands at the step waiting for the person before.
     if (s.boarders === null) {
-      const seated = [...this.passengers.values()].filter((r) => r.vehicleId === v.id).length;
-      s.boarders = [...this.passengers.values()]
-        .filter(
-          (r) => r.phase === 'waiting' && r.originStop === s.stop && r.direction === v.direction,
-        )
-        .slice(0, v.capacity - seated)
+      s.boarders = this.boardersFor(v, s.stop)
+        .slice(0, this.seatsLeft(v))
         .map((r) => r.id);
     }
-    let id: number | undefined;
-    while ((id = s.boarders.shift()) !== undefined) {
-      const r = this.passengers.get(id)!;
-      if (r.phase !== 'waiting') continue;
-      const taken = new Set(
-        [...this.passengers.values()].filter((p) => p.vehicleId === v.id).map((p) => p.seat),
-      );
-      const seat = this.layouts[v.id]!.seatOrder.find((k) => !taken.has(k));
-      if (seat === undefined) break;
-      this.poseAt(v.id, pose);
-      const dx = r.pose.x - pose.x,
-        dz = r.pose.z - pose.z;
-      const start: Point3 = [
-        dx * Math.cos(pose.heading) - dz * Math.sin(pose.heading),
-        0,
-        dx * Math.sin(pose.heading) + dz * Math.cos(pose.heading),
-      ];
+    while (s.boarders.length > 0) {
+      const r = this.passengers.get(s.boarders[0]!);
+      if (!r || r.phase !== 'waiting') {
+        s.boarders.shift(); // walked off, or got on another jeepney
+        s.next = null;
+        continue;
+      }
+      if (!s.next || s.next.id !== r.id) {
+        const seat = this.freeSeat(v);
+        if (seat === undefined) {
+          s.boarders.length = 0; // full
+          break;
+        }
+        const motion = this.layouts[v.id]!.board(seat, this.localStart(v, r));
+        s.next = { id: r.id, seat, motion, inAfterS: this.timeToGetIn(v, motion) };
+      }
+      // Too early: they would only queue at the step behind the one before.
+      if (this.clock + s.next.inAfterS < s.doorFreeAt) return;
+      s.boarders.shift();
       r.vehicleId = r.lastVehicleId = v.id;
-      r.seat = seat;
+      r.seat = s.next.seat;
+      s.on++;
       this.transition(r, 'boarding');
-      r.motion = this.layouts[v.id]!.board(seat, start);
+      r.spot = null; // their place in the crowd is free again
+      r.motion = s.next.motion;
       r.t = 0;
       r.motion.poseAt(0, r.pose);
       this.fleet.waiting[s.stop]!--;
-      s.active = r.id;
+      s.doorFreeAt = this.clock + s.next.inAfterS + DOOR_HEADWAY_S;
+      s.next = null;
+      return; // one more on the way each tick
+    }
+    // People are still waiting (another jeepney took some of this list):
+    // take the next of them while there are seats.
+    if (this.seatsLeft(v) > 0 && this.boardersFor(v, s.stop).length > 0) {
+      s.boarders = null;
       return;
     }
-    this.services.delete(v.id);
+    // Pull away only once nobody is still on the step.
+    if (this.tripsNow().onStep.has(v.id)) return;
+    // Everyone queued is on. Someone hurrying to the stop with a seat left
+    // for them: hold a moment, then board them like anyone else.
+    if (s.heldS < MAX_HOLD_S && this.seatsLeft(v) > 0 && this.hurryingTo(s.stop, v.direction)) {
+      s.heldS += dt;
+      s.boarders = null; // pick them up as soon as they reach the stop
+      return;
+    }
+    // At its terminal, in service: waits for riders until it is full enough
+    // to set out, or has waited long enough (FILL), as drivers line up there.
+    const fill = FILL[v.kind];
+    if (
+      s.terminal &&
+      v.duty === 'service' &&
+      s.fillS < fill.patienceS &&
+      (this.tripsNow().aboard.get(v.id) ?? 0) < Math.ceil(fill.share * v.capacity) &&
+      this.waitingAhead(v, s.stop) < this.seatsLeft(v) &&
+      !this.queuedBehind(v)
+    ) {
+      s.fillS += dt;
+      s.boarders = null; // whoever turns up gets on
+      return;
+    }
+    this.finish(v, s);
+  }
+
+  /**
+   * Riders waiting for `v` at its stops within FILL_LOOK_AHEAD_M after
+   * `stop`: with as many as it has seats left, its driver sets out from the
+   * terminal at once (they fill it on the way) instead of waiting there.
+   */
+  private waitingAhead(v: FleetVehicle, stop: number): number {
+    const route = this.fleet.route;
+    const ahead =
+      v.kind === 'jeepney' || v.kind === 'modern'
+        ? stopsAhead(route, stop, v.direction)
+        : stopsAheadFor(route, v.kind, stop, v.direction);
+    const from = route.stops[stop]!.s;
+    const t = this.tripsNow();
+    let n = 0;
+    for (const i of ahead) {
+      const d = route.loop
+        ? aheadOf(route, from, route.stops[i]!.s)
+        : Math.abs(route.stops[i]!.s - from);
+      if (d > FILL_LOOK_AHEAD_M) break;
+      if (!loadsAt(route, v, i)) continue;
+      for (const r of t.waiting.get(i) ?? [])
+        if (r.phase === 'waiting' && r.direction === v.direction) n++;
+    }
+    return n;
+  }
+
+  /**
+   * Another vehicle stopped just behind `v`, waiting its turn at the stop:
+   * the one in front leaves so the line moves (one loading bay), rather than
+   * holding everyone behind it while it fills.
+   */
+  private queuedBehind(v: FleetVehicle): boolean {
+    const route = this.fleet.route;
+    return this.fleet.vehicles.some((o) => {
+      if (o === v || o.duty === 'parked' || o.direction !== v.direction || o.speedMps > 0.5)
+        return false;
+      const d = route.loop ? aheadOf(route, o.s, v.s) : (v.s - o.s) * v.direction;
+      return d > 0 && d < QUEUE_BEHIND_M;
+    });
+  }
+
+  /** Seats free on `v` as of this tick (each jeepney takes on at most one person a tick). */
+  private seatsLeft(v: FleetVehicle): number {
+    return v.capacity - (this.tripsNow().aboard.get(v.id) ?? 0);
+  }
+
+  private freeSeat(v: FleetVehicle): number | undefined {
+    const taken = new Set<number | null>();
+    for (const r of this.passengers.values()) if (r.vehicleId === v.id) taken.add(r.seat);
+    return this.layouts[v.id]!.seatOrder.find((k) => !taken.has(k));
+  }
+
+  /**
+   * Whether jeepney `v`, at `stop`, goes to `destination`: its signboard
+   * names its next terminal, and it calls at every stop on the way there.
+   * A rider only gets on a jeepney that does.
+   */
+  goesTo(v: FleetVehicle, stop: number, destination: number): boolean {
+    const key = `${v.kind}:${stop * 2 + (v.direction === 1 ? 0 : 1)}`;
+    let ahead = this.callsAt.get(key);
+    if (!ahead) {
+      // A jeepney calls everywhere to its next terminal; a bus or UV Express
+      // only at the stops it serves, up to its own terminal.
+      ahead = new Set(
+        v.kind === 'jeepney' || v.kind === 'modern'
+          ? stopsAhead(this.fleet.route, stop, v.direction)
+          : stopsAheadFor(this.fleet.route, v.kind, stop, v.direction),
+      );
+      this.callsAt.set(key, ahead);
+    }
+    return ahead.has(destination);
+  }
+
+  /** Who can get on `v` at `stop`, in the order they came. */
+  private boardersFor(v: FleetVehicle, stop: number): Passenger[] {
+    if (!loadsAt(this.fleet.route, v, stop)) return [];
+    // The tick's list of people at the stop; phase read live, as one may
+    // have just got on another jeepney.
+    return (this.tripsNow().waiting.get(stop) ?? [])
+      .filter(
+        (r) =>
+          r.phase === 'waiting' &&
+          r.direction === v.direction &&
+          this.goesTo(v, stop, r.destinationStop),
+      )
+      .sort((a, b) => {
+        const joinedA = a.history.find((h) => h.phase === 'waiting')!.at;
+        const joinedB = b.history.find((h) => h.phase === 'waiting')!.at;
+        return joinedA - joinedB || a.id - b.id;
+      });
+  }
+
+  /** Where waiting rider `r` stands, in jeepney `v`'s own frame. */
+  private localStart(v: FleetVehicle, r: Passenger): Point3 {
+    const pose = this.poseAt(v.id, this.vehiclePose);
+    const dx = r.pose.x - pose.x;
+    const dz = r.pose.z - pose.z;
+    return [
+      dx * Math.cos(pose.heading) - dz * Math.sin(pose.heading),
+      0,
+      dx * Math.sin(pose.heading) + dz * Math.cos(pose.heading),
+    ];
+  }
+
+  /** Seconds into a boarding motion when the rider is inside the cabin. */
+  private timeToGetIn(v: FleetVehicle, motion: RiderMotion): number {
+    const layout = this.layouts[v.id]!;
+    for (let t = 0; t <= motion.duration; t += 1 / 30)
+      if (layout.isInside(motion.poseAt(t, this.scratch))) return t;
+    return motion.duration;
+  }
+
+  /**
+   * Whether jeepney `v` needs to stop at `stop`: someone on board gets off
+   * there, or someone there can get on (it has a seat, and goes where they
+   * are going). Terminals always. Otherwise it drives past, as a jeepney
+   * does when nobody calls "para" and nobody is waiting.
+   */
+  dropsAt(v: FleetVehicle, stop: number): boolean {
+    const t = this.tripsNow();
+    if (stopRoles(this.fleet.route, v.kind).terminal[stop]) return (t.aboard.get(v.id) ?? 0) > 0;
+    return t.gettingOff.get(v.id)?.has(stop) ?? false;
+  }
+
+  wantsStop(v: FleetVehicle, stop: number): boolean {
+    const roles = stopRoles(this.fleet.route, v.kind);
+    if (roles.terminal[stop]) return true;
+    // Not its stop at all (a jeepney station, for a bus).
+    if (!roles.serves[stop] && !roles.loads[stop]) return false;
+    const t = this.tripsNow();
+    if (t.gettingOff.get(v.id)?.has(stop)) return true;
+    if ((t.aboard.get(v.id) ?? 0) >= v.capacity) return false;
+    if (!loadsAt(this.fleet.route, v, stop)) return false;
+    return (t.waiting.get(stop) ?? []).some(
+      (r) => r.direction === v.direction && this.goesTo(v, stop, r.destinationStop),
+    );
+  }
+
+  /**
+   * Who is aboard each jeepney, where they get off, and who waits where,
+   * worked out once per tick: the fleet asks wantsStop for every jeepney
+   * every tick, and scanning every rider each time would not scale.
+   */
+  private tripsNow(): Trips {
+    const t = this.trips;
+    if (t.at === this.clock) return t;
+    // Refilled in place, not rebuilt: this runs every tick.
+    t.at = this.clock;
+    t.aboard.clear();
+    for (const set of t.gettingOff.values()) set.clear();
+    for (const list of t.waiting.values()) list.length = 0;
+    t.doorBusy.clear();
+    t.onStep.clear();
+    for (const r of this.passengers.values()) {
+      if (r.vehicleId !== null) {
+        t.aboard.set(r.vehicleId, (t.aboard.get(r.vehicleId) ?? 0) + 1);
+        if (r.phase === 'seated' || r.phase === 'boarding') {
+          let set = t.gettingOff.get(r.vehicleId);
+          if (!set) t.gettingOff.set(r.vehicleId, (set = new Set()));
+          set.add(r.destinationStop);
+        }
+        if (r.phase === 'alighting') t.doorBusy.add(r.vehicleId);
+        if (r.phase === 'alighting' || (r.phase === 'boarding' && !r.inside))
+          t.onStep.add(r.vehicleId);
+      } else if (
+        r.phase === 'waiting' ||
+        // Someone nearly at the stop is worth stopping for (they will be waited for).
+        (r.phase === 'approaching' && !!r.motion && r.motion.duration - r.t <= RUNNER_WITHIN_S)
+      ) {
+        let list = t.waiting.get(r.originStop);
+        if (!list) t.waiting.set(r.originStop, (list = []));
+        list.push(r);
+      } else if (r.phase === 'walking' && r.t < CLEAR_DOOR_S && r.lastVehicleId !== null) {
+        // Just stepped off: still in the doorway.
+        t.doorBusy.add(r.lastVehicleId);
+      }
+    }
+    return t;
+  }
+
+  /** Someone walking up to `stop`, going `direction`, who is nearly there. */
+  private hurryingTo(stop: number, direction: 1 | -1): boolean {
+    // The tick's list holds only those within RUNNER_WITHIN_S of the stop.
+    return (this.tripsNow().waiting.get(stop) ?? []).some(
+      (r) => r.phase === 'approaching' && r.direction === direction,
+    );
   }
 
   private walkAway(r: Passenger): void {
@@ -294,21 +1358,57 @@ export class PassengerSystem implements PassengerService {
     r.vehicleId = null;
     r.seat = null;
     r.inside = false;
-    const key = `${s.stop}/${r.direction}`;
-    const slot = this.arrivals.get(key) ?? 0;
-    this.arrivals.set(key, slot + 1);
-    const target = arrivalPoint(this.fleet.route, s.stop, r.direction, slot);
-    const rear = stopPoint(this.fleet.route, s.stop, r.direction, -5, STOP_CURB_M);
-    r.motion = RiderMotion.walking([
-      [r.pose.x, 0, r.pose.z],
-      [rear.x, 0, rear.z],
-      [target.x, 0, target.z],
-    ]);
+    const route = this.fleet.route;
+    // Changing jeepneys at a terminal on the way home: into its line for the next one.
+    if (r.thenTo !== undefined && isTerminal(route, s.stop)) {
+      this.changeAt(r, s.stop);
+      return;
+    }
+    // Where they actually got off (a terminal puts everyone off).
+    r.destinationStop = s.stop;
+    // Off the back step, up onto the pavement where they are (at the stop,
+    // or further back if let off in a queue), and away. They fade out once
+    // there.
+    const here = alongFrom(route, s.stop, r.direction, r.pose);
+    const kerbside = pavementPoint(route, s.stop, r.direction, here, 0.6);
+    const target = leavingSpot(route, s.stop, r.direction, r.id, here);
+    // On to home or work along the side streets, when they are known.
+    r.motion =
+      this.toStreets(r, s.stop, kerbside) ??
+      RiderMotion.walking([
+        [r.pose.x, 0, r.pose.z],
+        [kerbside.x, 0, kerbside.z],
+        [target.x, 0, target.z],
+      ]);
     r.t = 0;
     this.transition(r, 'walking');
   }
 
+  /** Off at terminal `stop` to change jeepneys: a few steps to its waiting area, then in line. */
+  private changeAt(r: Passenger, stop: number): void {
+    const target = waitingSpot(
+      this.fleet.route,
+      stop,
+      r.direction,
+      r.id,
+      this.othersAt(stop, r.direction),
+    );
+    r.originStop = stop;
+    r.destinationStop = r.thenTo!;
+    r.thenTo = undefined;
+    r.spot = target;
+    r.motion = RiderMotion.walking([
+      [r.pose.x, 0, r.pose.z],
+      [target.x, 0, target.z],
+    ]);
+    r.t = 0;
+    this.transition(r, 'approaching');
+    this.fleet.waiting[stop]!++;
+    this.trips.at = -1;
+  }
+
   private transition(r: Passenger, phase: PassengerPhase): void {
+    if (phase === 'arrived') this.metrics.completed++;
     r.phase = phase;
     r.history.push({ phase, at: this.clock });
   }

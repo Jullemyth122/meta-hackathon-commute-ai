@@ -26,7 +26,7 @@ const BAND_WIDTH_M = 4.2;
  * are pushed out by half the width, as for map roads, so the band has square
  * caps instead of stopping short at the terminals.
  */
-function widthlessRibbon(line: Polyline): BufferGeometry {
+export function widthlessRibbon(line: Polyline): BufferGeometry {
   const pts = line.points;
   const n = pts.length;
   const position = new Float32Array(n * 6);
@@ -65,7 +65,7 @@ function widthlessRibbon(line: Polyline): BufferGeometry {
 }
 
 /** An unlit flat material whose width (metres) is set through `width.value`. */
-function bandMaterial(color: string, metres: number) {
+export function bandMaterial(color: string, metres: number) {
   const width = uniform(metres);
   const side = attribute<'vec2'>('offset', 'vec2');
   const material = flat(new MeshBasicNodeMaterial({ color }));

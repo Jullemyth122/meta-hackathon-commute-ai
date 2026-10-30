@@ -1,7 +1,69 @@
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
+
+/**
+ * The serverless functions in api/ (assistant, voice, planner), served by the
+ * dev server too, so `npm run dev` has everything `vercel dev` and the
+ * deployment have. Each api/<name>.ts exports a handler per HTTP method
+ * taking a web Request and returning a Response, as on Vercel.
+ *
+ * Their keys (META_API_KEY, ELEVENLABS_API_KEY, …) are read from .env into
+ * this Node process only. Vite exposes just VITE_-prefixed variables to the
+ * browser, so none of them reaches the page.
+ */
+function devApi(env: Record<string, string>): Plugin {
+  return {
+    name: 'commuteai-dev-api',
+    apply: 'serve',
+    configureServer(server) {
+      for (const [key, value] of Object.entries(env)) process.env[key] ??= value;
+      server.middlewares.use(async (req, res, next) => {
+        const url = new URL(req.originalUrl ?? req.url ?? '/', `http://${req.headers.host}`);
+        if (!url.pathname.startsWith('/api/')) return next();
+        // api/_lib holds shared code, not routes (as on Vercel).
+        const name = /^\/api\/([a-z][a-z0-9-]*)$/.exec(url.pathname)?.[1];
+        const file = name && resolve(import.meta.dirname, 'api', `${name}.ts`);
+        if (!file || !existsSync(file)) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        try {
+          const handlers = (await server.ssrLoadModule(file)) as Record<string, unknown>;
+          const handler = handlers[req.method ?? 'GET'];
+          if (typeof handler !== 'function') {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(chunk as Buffer);
+          const headers = new Headers();
+          for (const [key, value] of Object.entries(req.headers))
+            if (value !== undefined)
+              headers.set(key, Array.isArray(value) ? value.join(', ') : value);
+          const hasBody = req.method !== 'GET' && req.method !== 'HEAD';
+          const response = (await handler(
+            new Request(url, {
+              method: req.method,
+              headers,
+              body: hasBody ? new Uint8Array(Buffer.concat(chunks)) : undefined,
+            }),
+          )) as Response;
+          res.statusCode = response.status;
+          response.headers.forEach((value, key) => res.setHeader(key, value));
+          res.end(Buffer.from(await response.arrayBuffer()));
+        } catch (err) {
+          if (err instanceof Error) server.ssrFixStacktrace(err);
+          next(err);
+        }
+      });
+    },
+  };
+}
 
 /**
  * Two entry points, on purpose:
@@ -12,7 +74,12 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
  * browsers only expose the Geolocation API on secure origins.
  */
 export default defineConfig(({ mode }) => ({
-  plugins: [react(), mode === 'phone' && basicSsl()],
+  plugins: [
+    react(),
+    mode === 'phone' && basicSsl(),
+    // Not under Vitest: tests must never see real keys or call paid APIs.
+    !process.env.VITEST && devApi(loadEnv(mode, import.meta.dirname, '')),
+  ],
   resolve: {
     alias: { '@': resolve(import.meta.dirname, 'src') },
   },

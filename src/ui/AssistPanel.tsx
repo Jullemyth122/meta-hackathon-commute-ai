@@ -1,16 +1,26 @@
 /**
- * Ask Muse Spark about the current twin. The model receives a number-only
- * snapshot and is instructed to refuse rather than guess (see api/assist.ts).
+ * Ask Muse Spark from the Live twin. With a jeepney selected, the question
+ * is about that jeepney and sent exactly as its driver's app would send it;
+ * with none, about the whole fleet (operatorScreen: totals and the busiest
+ * stops). Either way the size, and so the cost, does not grow with the fleet.
  */
 
 import { useState, type FormEvent } from 'react';
-import { askAssistant } from '@/net/assist';
+import type { PlannerRequest } from '@/core/advisory/plannerSnapshot';
+import { askAs, type AssistAnswer } from '@/net/assist';
 
-export function AssistPanel({ snapshot }: { snapshot: () => object }) {
+export function AssistPanel({
+  about,
+  request,
+}: {
+  /** The selected jeepney's plate, or null for the whole fleet. */
+  about: string | null;
+  request: () => PlannerRequest;
+}) {
   const [question, setQuestion] = useState(
     'Which jeepney should pick up the most waiting riders next?',
   );
-  const [answer, setAnswer] = useState<string | null>(null);
+  const [answer, setAnswer] = useState<AssistAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -19,7 +29,7 @@ export function AssistPanel({ snapshot }: { snapshot: () => object }) {
     setBusy(true);
     setError(null);
     try {
-      setAnswer(await askAssistant(question, snapshot()));
+      setAnswer(await askAs(question, request()));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -30,6 +40,11 @@ export function AssistPanel({ snapshot }: { snapshot: () => object }) {
   return (
     <section className="section">
       <h3 className="section__title">Ask the assistant</h3>
+      <p className="fine">
+        {about
+          ? `Asking about ${about}, the jeepney selected above.`
+          : 'Asking about the whole fleet. Select a jeepney above to ask about it.'}
+      </p>
       <form className="assist" onSubmit={submit}>
         <textarea
           value={question}
@@ -41,7 +56,7 @@ export function AssistPanel({ snapshot }: { snapshot: () => object }) {
           {busy ? 'Thinking…' : 'Ask'}
         </button>
       </form>
-      {answer && <p className="assist__answer">{answer}</p>}
+      {answer && <p className="assist__answer">{answer.text}</p>}
       {error && <p className="error">{error}</p>}
       <p className="fine">
         Answers use only the numbers on screen. Deterministic code decides; the model explains.

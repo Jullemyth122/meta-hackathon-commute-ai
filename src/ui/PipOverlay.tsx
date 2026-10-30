@@ -97,7 +97,7 @@ export function PipOverlay({
       ctx.fillStyle = '#fff';
       ctx.font = '10px "IBM Plex Mono", monospace';
       ctx.fillText(
-        `FPS ${t.fps} · ${t.latencyMs.toFixed(0)} ms · riders ${t.counts.current} (heads ${t.seenSteady}) ↑${t.counts.boarded} ↓${t.counts.alighted}`,
+        `ESP ${t.fps} fps · ${t.latencyMs.toFixed(0)} ms · riders ${t.counts.current} (heads ${t.seenSteady}) ↑${t.counts.boarded} ↓${t.counts.alighted}`,
         4,
         FRAME_H - 4,
       );

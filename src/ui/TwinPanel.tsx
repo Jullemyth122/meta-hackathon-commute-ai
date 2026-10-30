@@ -3,6 +3,12 @@
 import type { ChangeEvent } from 'react';
 import { useRuntimes } from '@/app/runtimeContext';
 import { sameTarget, useApp } from '@/app/store';
+import { twinState } from '@/app/twinState';
+import { dispatch } from '@/core/advisory/dispatch';
+import { driverView } from '@/core/advisory/driver';
+import { plannerRequest, type PlannerRequest } from '@/core/advisory/plannerSnapshot';
+import { driverScreen, operatorScreen } from '@/core/advisory/screen';
+import { fuelAhead, stationsFor } from '@/core/fuel/stations';
 import {
   DEFAULT_ROUTE_ID,
   defaultRoute,
@@ -13,8 +19,12 @@ import {
 } from '@/core/geo/routes';
 import type { LiveVehicle } from '@/core/tracking/liveVehicle';
 import { AssistPanel } from './AssistPanel';
+import { FleetEarnings } from './FleetEarnings';
 import { useTicker } from './useTicker';
 import { PassengerPanel } from './PassengerPanel';
+import { SimulationPanel } from './SimulationPanel';
+import { NetworkSection } from './network/NetworkSection';
+import { IncomingStopsPanel } from './IncomingStopsPanel';
 
 const ROUTE_SOURCE_LABEL = {
   synthetic: 'Synthetic, not a real road',
@@ -60,10 +70,15 @@ export function TwinPanel() {
 
   const onBoard = twin.fleet.vehicles.reduce((n, v) => n + v.occupancy, 0);
   const seats = twin.fleet.vehicles.reduce((n, v) => n + v.capacity, 0);
-  const waiting = twin.fleet.waiting.reduce((n, w) => n + w, 0);
+  const waiting = [...twin.crew.passengers.values()].filter((p) => p.phase === 'waiting').length;
 
   return (
     <div className="panel__body">
+      <NetworkSection />
+      {/* A newly focused route brings its own scenario: start the form from it. */}
+      <SimulationPanel key={route.id} />
+      <IncomingStopsPanel />
+      <FleetEarnings />
       <PassengerPanel />
       <section className="section">
         <h3 className="section__title">Route</h3>
@@ -74,20 +89,31 @@ export function TwinPanel() {
             {ROUTE_SOURCE_LABEL[route.source]}
           </span>
           <span>Length</span>
-          <span className="mono">{(route.polyline.length / 1000).toFixed(2)} km</span>
+          <span className="mono">
+            {(route.polyline.length / 1000).toFixed(2)} km{route.loop ? ' round trip (loop)' : ''}
+          </span>
           <span>Stops</span>
           <span className="mono">
             {route.stops.length}{' '}
             {route.stopsSource === 'osm'
               ? '(OpenStreetMap bus stops)'
-              : '(evenly spaced placeholders)'}
+              : route.stopsSource === 'gtfs'
+                ? '(DOTC GTFS stops, 2015)'
+                : '(evenly spaced placeholders)'}
           </span>
         </div>
-        {route.stopsSource === 'osm' && (
+        {route.stopsSource !== 'placeholder' && (
           <ol className="stop-list">
             {route.stops.map((stop) => (
-              <li key={stop.s}>
-                <span>{stop.name}</span>
+              <li key={stop.s} className={stop.terminal ? 'stop-list__terminal' : undefined}>
+                <span>
+                  {stop.name}
+                  {stop.terminal
+                    ? ' (terminal)'
+                    : route.loop && stop.towards
+                      ? ` → ${stop.towards}`
+                      : ''}
+                </span>
                 <span className="mono">{(stop.s / 1000).toFixed(1)} km</span>
               </li>
             ))}
@@ -119,7 +145,7 @@ export function TwinPanel() {
               className="btn btn--ghost"
               onClick={() => setRoute(defaultRoute())}
             >
-              Malaria – Fairview
+              Tungko – Fairview
             </button>
           ) : (
             <button
@@ -134,7 +160,7 @@ export function TwinPanel() {
         {route.source === 'synthetic' && (
           <p className="fine">
             Offline demo: no map and no real road, so live GPS cannot be matched. Switch back to
-            Malaria – Fairview, load a route file, or ride once and use the trace as the route.
+            Tungko – Fairview, load a route file, or ride once and use the trace as the route.
           </p>
         )}
       </section>
@@ -254,7 +280,29 @@ export function TwinPanel() {
         </p>
       </section>
 
-      <AssistPanel snapshot={() => twin.snapshot(Date.now())} />
+      <AssistPanel
+        about={follow?.kind === 'sim' ? (twin.fleet.vehicles[follow.index]?.plate ?? null) : null}
+        request={(): PlannerRequest => {
+          const state = twinState(twin);
+          const plan = dispatch(state);
+          const v = follow?.kind === 'sim' ? state.vehicles[follow.index] : undefined;
+          // The selected jeepney: what its driver's app would send.
+          if (v) {
+            const at = { s: v.s, direction: v.direction, x: v.x, z: v.z };
+            return {
+              ...plannerRequest(state, { role: 'driver', vehicle: v.index }),
+              screen: driverScreen(
+                driverView(state, v.index, plan),
+                fuelAhead(twin.route, stationsFor(twin.route), at),
+              ),
+            };
+          }
+          return {
+            ...plannerRequest(state, { role: 'operator' }),
+            screen: operatorScreen(state, plan),
+          };
+        }}
+      />
     </div>
   );
 }

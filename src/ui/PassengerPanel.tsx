@@ -107,7 +107,7 @@ export function PassengerPanel() {
         {visible.length > 40
           ? `Showing 40 of ${visible.length}. Search an ID to find any passenger.`
           : `${visible.length} passengers`}{' '}
-        · {people.filter((r) => r.phase === 'arrived').length} arrived
+        · {twin.crew.delivered + people.filter((r) => r.phase === 'arrived').length} arrived
       </small>
     </section>
   );

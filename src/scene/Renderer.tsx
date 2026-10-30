@@ -14,6 +14,7 @@ import { Canvas, extend, type ThreeToJSXElements } from '@react-three/fiber';
 import type { ReactNode } from 'react';
 import * as THREE from 'three/webgpu';
 import { config } from '@/config';
+import { FrameMonitor } from './FrameMonitor';
 
 declare module '@react-three/fiber' {
   // eslint-disable-next-line @typescript-eslint/no-empty-object-type
@@ -25,6 +26,8 @@ extend(THREE as unknown as Parameters<typeof extend>[0]);
 interface Props {
   children: ReactNode;
   camera: { position: [number, number, number]; fov?: number; near?: number; far?: number };
+  /** Stop drawing (the canvas is hidden), keeping the scene and its loaded map. */
+  paused?: boolean;
   onBackend?: (backend: 'WebGPU' | 'WebGL2') => void;
   /**
    * The GPU dropped our device (driver reset, GPU memory pressure, many hot
@@ -33,10 +36,11 @@ interface Props {
   onLost?: (reason: string) => void;
 }
 
-export function Renderer({ children, camera, onBackend, onLost }: Props) {
+export function Renderer({ children, camera, paused = false, onBackend, onLost }: Props) {
   return (
     <Canvas
       shadows
+      frameloop={paused ? 'never' : 'always'}
       camera={{ fov: 42, near: 0.3, far: 6000, ...camera }}
       // Cap pixel ratio: 3× phones would quadruple fill cost for no visible gain.
       dpr={[1, 1.75]}
@@ -59,6 +63,8 @@ export function Renderer({ children, camera, onBackend, onLost }: Props) {
         return renderer;
       }}
     >
+      {/* Restarted after a pause, so the gap is not measured as one long frame. */}
+      <FrameMonitor key={String(paused)} />
       {children}
     </Canvas>
   );

@@ -3,9 +3,13 @@
  *
  *   overview   frame the whole route (also the opening shot of a new route)
  *   street     a close 3/4 view of the route near the start
+ *   stop       a closer view of one stop (the commuter app's stop)
+ *   area       frame some points the same way (a planned trip, end to end)
  *   chase      ride behind one jeepney, turning with it; dragging the view
  *              switches to a free orbit that still travels with the jeepney
- *   inside     wide cabin view from the ESP camera mount, without detections
+ *   inside     standing in the aisle behind the driver, looking down the cabin
+ *   pov        the front seat beside the driver, with mouse look-around and a
+ *              rear-view mirror (doorway/PipRenderer.tsx)
  *
  * Shots are GSAP tweens of the orbit target and camera position. Grabbing the
  * controls cancels a running tween, so the user never fights an animation.
@@ -17,11 +21,12 @@ import { useEffect, useMemo, useRef } from 'react';
 import { MathUtils, type PerspectiveCamera, Vector3 } from 'three';
 import { useRuntimes } from '@/app/runtimeContext';
 import { useApp, type FollowTarget } from '@/app/store';
+import type { LocalPoint } from '@/core/geo/projection';
 import type { Route } from '@/core/geo/routes';
 import type { TwinRuntime } from '@/app/twinRuntime';
 import type { GroundPose } from './jeepney/JeepneyInstances';
 import { fleetPose } from './world/lanes';
-import { CABIN_CAM } from './doorway/cabinCamera';
+import { FOLLOW_VIEWS, INSIDE_VFOV, type FollowViews } from './cabinViews';
 import { FRAME_ORDER } from './frameOrder';
 import { newRiderPose } from '@/core/people/riderMotion';
 
@@ -45,25 +50,12 @@ const STREET_DISTANCE_M = 340;
  * street outside and the passengers inside (through the rear doorway and side
  * windows) are clearly visible, and orbiting/zooming pivots around the cabin.
  */
-const FOLLOW_TARGET_Y = 1.2;
-const CABIN_CENTER_X = -0.5;
-const CHASE_BACK_M = 7.2;
-const CHASE_UP_M = 3.2;
-const CHASE_LEFT_M = 2.6;
 /** Maximum distance (m) the user may pan the orbit pivot away from the followed jeepney. */
 const MAX_TARGET_OFFSET_M = 8;
-/**
- * Inside view shares the ESP mount and lens, rendered at the main viewport's
- * aspect ratio and resolution. Detection overlays belong only to the PiP.
- */
-const INSIDE_EYE = CABIN_CAM.position;
-const INSIDE_LOOK = CABIN_CAM.lookAt;
 /**
  * Front cab / Driver POV: seated in the front cab beside the driver, looking
  * across the steering wheel, dashboard, gauge cluster and out the windshield.
  */
-const POV_EYE = new Vector3(0.94, 1.5, 0.24);
-const POV_TARGET = new Vector3(1.16, 1.46, 0.08);
 const POV_VFOV = 62;
 /** Near plane as a fraction of the orbit distance (keeps depth precision). */
 const NEAR_FRACTION = 0.01;
@@ -86,16 +78,16 @@ const OVERVIEW_FILL = 0.82;
 
 /**
  * Looking north (north stays up, like a map), 58° down, at the closest
- * distance where the route's bounding box fits on screen. A tilted view is
+ * distance where the points' bounding box fits on screen. A tilted view is
  * not symmetric (the near edge looms larger), so instead of a formula we
  * binary-search the distance and test the four corners with a scratch camera.
  */
-function overviewShot(route: Route, camera: PerspectiveCamera): Shot {
+function frameShot(points: readonly LocalPoint[], camera: PerspectiveCamera): Shot {
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
   let maxZ = -Infinity;
-  for (const p of route.polyline.points) {
+  for (const p of points) {
     minX = Math.min(minX, p.x);
     maxX = Math.max(maxX, p.x);
     minZ = Math.min(minZ, p.z);
@@ -131,6 +123,18 @@ function overviewShot(route: Route, camera: PerspectiveCamera): Shot {
   return orbit(centre, hi, pitch, Math.PI / 2);
 }
 
+/** The whole route on screen. */
+const overviewShot = (route: Route, camera: PerspectiveCamera) =>
+  frameShot(route.polyline.points, camera);
+
+/** Where a commuter waits: a close 3/4 view of one stop. */
+const STOP_DISTANCE_M = 60;
+
+function stopShot(route: Route, stop: number): Shot {
+  const p = route.polyline.pointAt(route.stops[stop]?.s ?? 0);
+  return orbit(new Vector3(p.x, 0, p.z), STOP_DISTANCE_M, MathUtils.degToRad(30), p.heading - 0.6);
+}
+
 function streetShot(route: Route): Shot {
   const p = route.polyline.pointAt(Math.min(STREET_AT_M, route.polyline.length / 2));
   // Look along the road, from behind and slightly to the side.
@@ -151,6 +155,12 @@ function followPose(twin: TwinRuntime, target: FollowTarget, out: GroundPose): G
   return twin.fleet.vehicles[target.index] ? fleetPose(twin.fleet, target.index, out) : null;
 }
 
+/** The ride-along cameras for whatever `target` is (a live phone: as a jeepney). */
+function viewsFor(twin: TwinRuntime, target: FollowTarget | null): FollowViews {
+  const kind = target?.kind === 'sim' ? twin.fleet.vehicles[target.index]?.kind : undefined;
+  return FOLLOW_VIEWS[kind ?? 'jeepney'];
+}
+
 function followKey(target: FollowTarget): string {
   return target.kind === 'live' ? `live:${target.id}` : `sim:${target.index}`;
 }
@@ -168,6 +178,7 @@ export function CameraRig() {
   const { twin } = useRuntimes();
   const camera = useThree((s) => s.camera) as PerspectiveCamera;
   const controls = useThree((s) => s.controls) as Controls | null;
+  const scene = useThree((s) => s.scene);
   const shot = useApp((s) => s.shot);
   const follow = useApp((s) => s.follow);
   const tracked = useApp((s) => s.trackedRiderId);
@@ -178,7 +189,7 @@ export function CameraRig() {
   // Restore the exterior lens before computing a new overview/street shot.
   useEffect(() => {
     if (viewMode === 'inside') {
-      camera.fov = CABIN_CAM.vfov;
+      camera.fov = INSIDE_VFOV;
     } else if (viewMode === 'pov') {
       camera.fov = POV_VFOV;
     } else {
@@ -219,7 +230,7 @@ export function CameraRig() {
 
   // Dev only: expose the camera next to the runtimes (see App.tsx).
   useEffect(() => {
-    if (import.meta.env.DEV) Object.assign(window, { __camera: { camera, controls } });
+    if (import.meta.env.DEV) Object.assign(window, { __camera: { camera, controls, scene } });
   }, [camera, controls]);
 
   // The user taking the controls wins over any running animation.
@@ -242,7 +253,16 @@ export function CameraRig() {
   // Explicit shot requests from the UI. seq 0 is the initial state, not a request.
   useEffect(() => {
     if (shot.seq === 0) return;
-    fly(shot.kind === 'overview' ? overviewShot(twin.route, camera) : streetShot(twin.route), 1.6);
+    fly(
+      shot.kind === 'overview'
+        ? overviewShot(twin.route, camera)
+        : shot.kind === 'area' && shot.area?.length
+          ? frameShot(shot.area, camera)
+          : shot.kind === 'stop'
+            ? stopShot(twin.route, shot.stop ?? 0)
+            : streetShot(twin.route),
+      1.6,
+    );
   }, [shot, twin.route, camera, fly]);
 
   // Follow. `steering` = the rig owns the camera angle; the user dragging
@@ -295,6 +315,7 @@ export function CameraRig() {
   useFrame((_, dt) => {
     if (!controls) return;
     const pose = follow ? followPose(twin, follow, scratch.pose) : null;
+    const V = viewsFor(twin, follow);
     const rider = tracked === null ? null : twin.crew.worldPose(tracked, scratch.rider);
 
     if (rider) {
@@ -314,8 +335,8 @@ export function CameraRig() {
       // Rigidly attached: the cabin must not swim around the viewer.
       const c = Math.cos(pose.heading);
       const s = Math.sin(pose.heading);
-      const anchorX = pose.x + CABIN_CENTER_X * c;
-      const anchorZ = pose.z - CABIN_CENTER_X * s;
+      const anchorX = pose.x + V.centreX * c;
+      const anchorZ = pose.z - V.centreX * s;
       prevLock.current = {
         key: followKey(follow),
         view: 'inside',
@@ -325,8 +346,8 @@ export function CameraRig() {
       };
       const local = (v: Vector3, out: Vector3) =>
         out.set(pose.x + v.x * c + v.z * s, v.y, pose.z - v.x * s + v.z * c);
-      local(INSIDE_EYE, camera.position);
-      local(INSIDE_LOOK, controls.target);
+      local(V.insideEye, camera.position);
+      local(V.insideLook, controls.target);
       // Bypass orbit damping, distance limits and zoom while cabin-mounted.
       // Controls run earlier in the frame; this is the final camera transform.
       camera.lookAt(controls.target);
@@ -335,17 +356,17 @@ export function CameraRig() {
       // Front cab / Driver POV: seated in the front cab with 360° mouse look-around.
       const c = Math.cos(pose.heading);
       const s = Math.sin(pose.heading);
-      const eyeX = pose.x + POV_EYE.x * c + POV_EYE.z * s;
-      const eyeZ = pose.z - POV_EYE.x * s + POV_EYE.z * c;
+      const eyeX = pose.x + V.povEye.x * c + V.povEye.z * s;
+      const eyeZ = pose.z - V.povEye.x * s + V.povEye.z * c;
       const key = followKey(follow);
       const prev = prevLock.current;
 
       if (!prev || prev.key !== key || prev.view !== 'pov') {
-        camera.position.set(eyeX, POV_EYE.y, eyeZ);
+        camera.position.set(eyeX, V.povEye.y, eyeZ);
         controls.target.set(
-          pose.x + POV_TARGET.x * c + POV_TARGET.z * s,
-          POV_TARGET.y,
-          pose.z - POV_TARGET.x * s + POV_TARGET.z * c,
+          pose.x + V.povTarget.x * c + V.povTarget.z * s,
+          V.povTarget.y,
+          pose.z - V.povTarget.x * s + V.povTarget.z * c,
         );
         prevLock.current = { key, view: 'pov', x: eyeX, z: eyeZ, heading: pose.heading };
       } else {
@@ -365,9 +386,9 @@ export function CameraRig() {
         }
         // Keep the head pivot anchored in the front cab seat even if the user right-drags.
         const driftX = eyeX - camera.position.x;
-        const driftY = POV_EYE.y - camera.position.y;
+        const driftY = V.povEye.y - camera.position.y;
         const driftZ = eyeZ - camera.position.z;
-        camera.position.set(eyeX, POV_EYE.y, eyeZ);
+        camera.position.set(eyeX, V.povEye.y, eyeZ);
         controls.target.x += driftX;
         controls.target.y += driftY;
         controls.target.z += driftZ;
@@ -380,19 +401,19 @@ export function CameraRig() {
     } else if (pose && follow) {
       const c = Math.cos(pose.heading);
       const s = Math.sin(pose.heading);
-      const anchorX = pose.x + CABIN_CENTER_X * c;
-      const anchorZ = pose.z - CABIN_CENTER_X * s;
+      const anchorX = pose.x + V.centreX * c;
+      const anchorZ = pose.z - V.centreX * s;
       const key = followKey(follow);
       const prev = prevLock.current;
 
       if (prev && prev.key === key && (prev.view === 'inside' || prev.view === 'pov')) {
         // Switching from Inside/POV view to Outside view on the same jeepney:
         // place the camera outside the cabin immediately so it never clips through the roof.
-        controls.target.set(anchorX, FOLLOW_TARGET_Y, anchorZ);
+        controls.target.set(anchorX, V.targetY, anchorZ);
         camera.position.set(
-          anchorX - c * CHASE_BACK_M + s * CHASE_LEFT_M,
-          CHASE_UP_M,
-          anchorZ + s * CHASE_BACK_M + c * CHASE_LEFT_M,
+          anchorX - c * V.chaseBack + s * V.chaseLeft,
+          V.chaseUp,
+          anchorZ + s * V.chaseBack + c * V.chaseLeft,
         );
         prevLock.current = { key, view: 'chase', x: anchorX, z: anchorZ, heading: pose.heading };
         steering.current = false;
@@ -428,7 +449,7 @@ export function CameraRig() {
 
         if (recenter.current) {
           // Smoothly glide the orbit pivot onto the jeepney cabin centre.
-          scratch.d.set(anchorX, FOLLOW_TARGET_Y, anchorZ).sub(controls.target);
+          scratch.d.set(anchorX, V.targetY, anchorZ).sub(controls.target);
           if (scratch.d.lengthSq() <= 0.0004) {
             controls.target.add(scratch.d);
             camera.position.add(scratch.d);
@@ -464,9 +485,9 @@ export function CameraRig() {
           // Ease the camera to its 3/4 chase spot behind and slightly left of the jeepney.
           scratch.want
             .set(
-              -c * CHASE_BACK_M + s * CHASE_LEFT_M,
-              CHASE_UP_M - FOLLOW_TARGET_Y,
-              s * CHASE_BACK_M + c * CHASE_LEFT_M,
+              -c * V.chaseBack + s * V.chaseLeft,
+              V.chaseUp - V.targetY,
+              s * V.chaseBack + c * V.chaseLeft,
             )
             .add(controls.target);
           camera.position.lerp(scratch.want, 1 - Math.exp(-dt * 5));
