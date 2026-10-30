@@ -1,0 +1,53 @@
+{
+  "week": "2026-10-20/2026-10-26",
+  "source": "DOE Oil Industry Management Bureau, Price Monitoring of Liquid Fuels, NCR (For the week of October 20-26, 2026)",
+  "sourceUrl": "https://d24qbtp4vooyzi.cloudfront.net/api/media/file/NCR%20Price%20Monitoring%2010202026.pdf?prefix=dev%2Fmedia",
+  "howToUpdate": "The DOE publishes a new NCR price monitoring PDF every week (prices change on Tuesdays). Copy each brand's lowest and highest DIESEL and DIESEL PLUS price for Caloocan City and Quezon City, and the COMMON PRICE column, from the new PDF into this file and change `week`. Brands the DOE does not list by name (Cleanfuel, Jade Blue, Uno Fuel, ...) are under Independent.",
+  "unit": "PHP per litre",
+  "cities": {
+    "Caloocan City": {
+      "diesel": {
+        "common": 95.8,
+        "brands": {
+          "Petron": [92.6, 96.5],
+          "Shell": [95.0, 95.8],
+          "Caltex": [96.2, 96.2],
+          "Flying V": [89.7, 91.6],
+          "Unioil": [94.5, 94.5],
+          "Seaoil": [89.99, 92.7],
+          "Independent": [88.0, 93.3]
+        }
+      },
+      "dieselPlus": {
+        "common": 97.7,
+        "brands": {
+          "Petron": [99.5, 99.5],
+          "Shell": [97.7, 99.3],
+          "Caltex": [99.9, 99.9]
+        }
+      }
+    },
+    "Quezon City": {
+      "diesel": {
+        "common": 93.3,
+        "brands": {
+          "Petron": [92.4, 93.3],
+          "Shell": [94.8, 96.5],
+          "Caltex": [94.7, 96.2],
+          "Phoenix": [92.4, 95.3],
+          "Flying V": [90.7, 91.6],
+          "Unioil": [91.8, 93.3],
+          "Seaoil": [91.16, 91.59],
+          "Independent": [89.3, 90.6]
+        }
+      },
+      "dieselPlus": {
+        "common": 96.3,
+        "brands": {
+          "Petron": [95.4, 96.3],
+          "Shell": [98.6, 100.2]
+        }
+      }
+    }
+  }
+}

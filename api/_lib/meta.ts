@@ -2,6 +2,10 @@
  * Minimal client for Meta's OpenAI-compatible chat completions endpoint.
  * Server-only: it reads META_API_KEY, which must never reach the browser.
  * (Files under api/_lib are not exposed as routes by Vercel.)
+ *
+ * Includes an in-memory TTL cache and a `META_SAVE_CREDITS=true` switch so
+ * development/testing or repeated identical queries consume $0.00 of the
+ * $150 free hackathon credit.
  */
 
 export interface ChatMessage {
@@ -11,8 +15,65 @@ export interface ChatMessage {
 
 export class MetaConfigError extends Error {}
 
+/** The model spent its whole budget thinking and wrote nothing (the call was still billed). */
+export class MetaEmptyReplyError extends Error {}
+
+/**
+ * Muse Spark reasons before it answers, and the reasoning is billed as
+ * output. 'minimal' keeps that to ~100 tokens for these questions (the
+ * numbers are already worked out by the planner); 'low' and up think for
+ * hundreds of tokens and add seconds for no better answer.
+ */
+const REASONING_EFFORT = process.env.META_REASONING_EFFORT ?? 'minimal';
+/**
+ * Room for the thinking plus a full answer: a one-line reply normally, a
+ * short paragraph (~150 words) when the question asks for more. Answers are
+ * kept short by the prompt, not by this cap; the cap only bounds the cost.
+ */
+const MAX_COMPLETION_TOKENS = Number(process.env.META_MAX_TOKENS) || 1000;
+
+const CACHE_TTL_MS = 60_000;
+const MAX_CACHE_ENTRIES = 100;
+const responseCache = new Map<string, { text: string; expiresAt: number }>();
+
 export function metaConfigured(): boolean {
   return Boolean(process.env.META_API_KEY && process.env.META_MODEL);
+}
+
+/**
+ * When `META_SAVE_CREDITS=true` is set in `.env`, `/api/assist` answers using
+ * the deterministic CommuteAI math/dispatch planner (`api/_lib/planner.ts`)
+ * without making external LLM network calls.
+ */
+export function creditSaverEnabled(): boolean {
+  const flag = (process.env.META_SAVE_CREDITS ?? '').toLowerCase().trim();
+  return flag === 'true' || flag === '1' || flag === 'yes';
+}
+
+export async function chatWithCache(
+  messages: ChatMessage[],
+  cacheKey?: string,
+  signal?: AbortSignal,
+): Promise<{ text: string; cached: boolean }> {
+  const now = Date.now();
+  if (cacheKey) {
+    const hit = responseCache.get(cacheKey);
+    if (hit && hit.expiresAt > now) {
+      return { text: hit.text, cached: true };
+    }
+  }
+
+  const text = await chat(messages, signal);
+
+  if (cacheKey && text) {
+    if (responseCache.size >= MAX_CACHE_ENTRIES) {
+      const oldestKey = responseCache.keys().next().value;
+      if (oldestKey !== undefined) responseCache.delete(oldestKey);
+    }
+    responseCache.set(cacheKey, { text, expiresAt: now + CACHE_TTL_MS });
+  }
+
+  return { text, cached: false };
 }
 
 export async function chat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
@@ -24,7 +85,13 @@ export async function chat(messages: ChatMessage[], signal?: AbortSignal): Promi
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, temperature: 0.2, max_tokens: 300 }),
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.2,
+      reasoning_effort: REASONING_EFFORT,
+      max_completion_tokens: MAX_COMPLETION_TOKENS,
+    }),
     signal,
   });
   if (!res.ok) {
@@ -32,6 +99,16 @@ export async function chat(messages: ChatMessage[], signal?: AbortSignal): Promi
     console.error('Meta API error', res.status, await res.text().catch(() => ''));
     throw new Error(`Meta API responded ${res.status}`);
   }
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  return data.choices?.[0]?.message?.content?.trim() ?? '';
+  const data = (await res.json()) as {
+    choices?: Array<{ finish_reason?: string; message?: { content?: string | null } }>;
+  };
+  const choice = data.choices?.[0];
+  const text = choice?.message?.content?.trim() ?? '';
+  if (!text) throw new MetaEmptyReplyError(`Empty reply (finish_reason ${choice?.finish_reason})`);
+  // Cut off mid-sentence by the cap: keep the complete sentences.
+  if (choice?.finish_reason === 'length') {
+    const end = Math.max(text.lastIndexOf('. '), text.lastIndexOf('.\n'), text.lastIndexOf('.'));
+    return end > 0 ? text.slice(0, end + 1) : text;
+  }
+  return text;
 }

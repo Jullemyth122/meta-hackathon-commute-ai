@@ -9,15 +9,18 @@
 
 import { useFrame, useThree } from '@react-three/fiber';
 import { useLayoutEffect, useRef } from 'react';
-import type { DirectionalLight } from 'three';
+import type { DirectionalLight, Fog } from 'three';
 import { LAND_COLOR } from '@/core/map/style';
 import { FLAT_ORDER } from '../map/flatLayers';
 
 const SHADOW_HALF_EXTENT = 80;
+/** Fog at street level; it recedes with camera height (see useFrame). */
+const FOG_NEAR_M = 2_500;
+const FOG_FAR_M = 14_000;
 const SUN_OFFSET: [number, number, number] = [60, 120, 45];
 const SKY = '#dbe5ec';
 
-export function Environment({ groundSize = 40_000 }: { groundSize?: number }) {
+export function Environment({ groundSize = 200_000 }: { groundSize?: number }) {
   const sun = useRef<DirectionalLight>(null);
   const controls = useThree((s) => s.controls) as {
     target?: { x: number; y: number; z: number };
@@ -39,7 +42,15 @@ export function Environment({ groundSize = 40_000 }: { groundSize?: number }) {
     light.shadow.normalBias = 0.04;
   }, []);
 
-  useFrame(() => {
+  useFrame((state) => {
+    // The fog keeps its look at street level and moves out as the operator
+    // zooms out over Metro Manila, so the map is never fogged over.
+    const fog = state.scene.fog as Fog | null;
+    if (fog) {
+      const h = state.camera.position.y;
+      fog.near = Math.max(FOG_NEAR_M, h * 2);
+      fog.far = Math.max(FOG_FAR_M, h * 6);
+    }
     const light = sun.current;
     const t = controls?.target;
     if (!light || !t) return;
@@ -51,7 +62,7 @@ export function Environment({ groundSize = 40_000 }: { groundSize?: number }) {
   return (
     <>
       <color attach="background" args={[SKY]} />
-      <fog attach="fog" args={[SKY, 2_500, 14_000]} />
+      <fog attach="fog" args={[SKY, FOG_NEAR_M, FOG_FAR_M]} />
       {/* Sky + sun add up to ~1.2× on flat ground: bright, without clipping light
           map colours to white (which is what made the first version look blank). */}
       <hemisphereLight args={['#ffffff', '#c9c0ae', 0.8]} />

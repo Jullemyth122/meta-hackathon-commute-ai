@@ -20,7 +20,7 @@ type Reply =
 let templatePromise: Promise<string> | null = null;
 
 /** Tile URL template from the TileJSON. Its path is versioned, so never hard-code it. */
-function tileTemplate(): Promise<string> {
+export function tileTemplate(): Promise<string> {
   templatePromise ??= fetch(config.mapTiles)
     .then((res) => {
       if (!res.ok) throw new Error(`TileJSON: HTTP ${res.status}`);
@@ -79,7 +79,14 @@ export function loadTiles(
           .replace('{z}', String(tile.z))
           .replace('{x}', String(tile.x))
           .replace('{y}', String(tile.y));
-        const request: TileRequest = { id: nextId++, url, tile, origin, route, pedestrianAreas };
+        const request: TileRequest = {
+          id: nextId++,
+          url,
+          tile,
+          origin,
+          route,
+          pedestrianAreas,
+        };
         worker.onmessage = (e: MessageEvent<Reply>) => {
           if (cancelled) return;
           if (e.data.ok) onTile(e.data.result);

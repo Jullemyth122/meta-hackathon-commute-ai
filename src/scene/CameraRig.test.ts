@@ -9,6 +9,7 @@ import { DoorwayRuntime } from '@/app/doorwayRuntime';
 import { useApp } from '@/app/store';
 import { syntheticDemoRoute } from '@/core/geo/routes';
 import { CameraRig } from './CameraRig';
+import { INSIDE_EYE, INSIDE_LOOK } from './cabinViews';
 import { createCabinCamera } from './doorway/cabinCamera';
 import { FRAME_ORDER } from './frameOrder';
 import { fleetPose } from './world/lanes';
@@ -60,7 +61,12 @@ describe('moving cabin camera', () => {
       );
 
       const points = [new Vector3(-3, 1.4, 0.7), new Vector3(-1, 2, -0.8)];
-      const expected = points.map((p) => p.clone().project(createCabinCamera()));
+      // Where they appear from the inside-view eye on a jeepney at the origin.
+      const eye = createCabinCamera();
+      eye.position.copy(INSIDE_EYE);
+      eye.lookAt(INSIDE_LOOK);
+      eye.updateMatrixWorld();
+      const expected = points.map((p) => p.clone().project(eye));
       const vehicle = new Object3D();
       const pose = { x: 0, z: 0, heading: 0 };
       let time = 0;

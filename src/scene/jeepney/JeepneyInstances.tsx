@@ -10,7 +10,7 @@
  * from a CrewState: they walk in, sit down, stand up and leave.
  */
 
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import {
   Box3,
@@ -40,6 +40,8 @@ import {
   DRIVER_SEAT,
   jeepneyBody,
   jeepneyWheels,
+  JEEPNEY_AXLES,
+  WHEEL_RADIUS,
   rimPoint,
   SEATED_ROOT_Y,
   STEERING_FRAME,
@@ -47,7 +49,7 @@ import {
   type PartSlot,
 } from './jeepneyGeometry';
 import { LIVERY_SLOTS, liveryColor, slotMaterial, wheelMaterial } from './materials';
-import { viewScale } from '../world/viewScale';
+import { useScaledPose } from '../world/viewScale';
 
 export interface GroundPose {
   x: number;
@@ -70,7 +72,14 @@ interface Props {
   drivers?: boolean;
   /** Called when the user clicks a jeepney in the 3D viewport. */
   onSelect?: (index: number, part: 'front' | 'body') => void;
+  /** Vehicles not to draw (or pick) this frame: parked for the night. */
+  hidden?: (i: number) => boolean;
+  /** Drawn with nobody at the wheel (parked). */
+  driverless?: (i: number) => boolean;
 }
+
+/** Collapses an instance to nothing: how a hidden jeepney is "drawn". */
+const NOWHERE = new Matrix4().makeScale(0, 0, 0);
 
 /** Bounding box of a single jeepney in its local ground frame (metres), for picking. */
 const HIT_BOX = new Box3(new Vector3(-3.55, 0, -1.2), new Vector3(3.35, 2.5, 1.2));
@@ -113,7 +122,7 @@ function wheelTurnFor(yawRate: number, speed: number): number {
  * Hands on the wheel at ten-to-two, turning with it; eyes on the road,
  * glancing into the turn.
  */
-function drivingPose(
+export function drivingPose(
   t: number,
   idle: number,
   wheelTurn: number,
@@ -138,7 +147,10 @@ export function JeepneyInstances({
   crew,
   drivers = true,
   onSelect,
+  hidden,
+  driverless,
 }: Props) {
+  const viewer = useThree((s) => s.camera);
   const body = jeepneyBody();
   const wheels = jeepneyWheels();
   const slots = useMemo(() => Object.keys(body) as PartSlot[], [body]);
@@ -147,7 +159,8 @@ export function JeepneyInstances({
   const wheelMeshes = useRef<Array<InstancedMesh | null>>([]);
   const steeringWheels = useRef<InstancedMesh>(null);
   const pickerRef = useRef<Object3D>(null);
-  const vehicleMatrices = useRef<Matrix4[]>([]);
+  /** Each vehicle's matrix for picking; null while it is hidden. */
+  const vehicleMatrices = useRef<Array<Matrix4 | null>>([]);
   const people = useRef<PeopleHandle>(null);
   const crewCapacity = count * (SEATS + 1);
   const local = useMemo(() => new Matrix4(), []);
@@ -199,7 +212,16 @@ export function JeepneyInstances({
       turnRates: new Float32Array(count),
       speeds: new Float32Array(count),
       wheelTurns: new Float32Array(count),
+      /** How far each one's wheels have turned (radians). */
+      spins: new Float32Array(count),
+      wheelM: new Matrix4(),
+      roll: new Matrix4(),
       hasPrev: new Uint8Array(count),
+      // This frame's ground pose of each vehicle (from poseAt), and the clock.
+      poseX: new Float32Array(count),
+      poseZ: new Float32Array(count),
+      poseHeading: new Float32Array(count),
+      t: 0,
       spin: new Matrix4(),
       steeringM: new Matrix4(),
       grip: [new Vector3(), new Vector3()] as [Vector3, Vector3],
@@ -217,19 +239,19 @@ export function JeepneyInstances({
     });
   }, [slots, count, liveries]);
 
+  // Once per frame: where each jeepney is, and how fast it turns and moves
+  // (smoothed over a few frames), which drives its steering wheel.
   useFrame((state, dt) => {
-    const { pose, obj, lift, bodyM, root, person, prevHeading, prevX, prevZ } = scratch;
-    const { turnRates, speeds, wheelTurns, hasPrev, spin, steeringM, grip } = scratch;
-    const crowd = people.current;
-    const steering = steeringWheels.current;
-    const t = state.clock.elapsedTime;
+    const { pose, prevHeading, prevX, prevZ, turnRates, speeds, wheelTurns, hasPrev, spins } =
+      scratch;
+    const { poseX, poseZ, poseHeading } = scratch;
     const ease = Math.min(1, dt * 6);
-    obj.scale.setScalar(scaleWithView ? viewScale(state) : 1);
-    crowd?.begin();
+    scratch.t = state.clock.elapsedTime;
     for (let i = 0; i < count; i++) {
       poseAt(i, pose);
-      // How fast the jeepney is turning and moving, smoothed over a few
-      // frames, drives the steering wheel.
+      poseX[i] = pose.x;
+      poseZ[i] = pose.z;
+      poseHeading[i] = pose.heading;
       if (hasPrev[i] && dt > 0.001) {
         const dh = Math.atan2(
           Math.sin(pose.heading - prevHeading[i]!),
@@ -240,15 +262,46 @@ export function JeepneyInstances({
         const speed = Math.hypot(pose.x - prevX[i]!, pose.z - prevZ[i]!) / dt;
         turnRates[i]! += (yawRate - turnRates[i]!) * ease;
         speeds[i]! += (Math.min(speed, 30) - speeds[i]!) * ease;
+        // The wheels roll as far as it moved (a jump, a new place: not rolled).
+        const moved = speed * dt;
+        if (moved < 15) spins[i]! += moved / WHEEL_RADIUS;
         wheelTurns[i]! += (wheelTurnFor(turnRates[i]!, speeds[i]!) - wheelTurns[i]!) * ease;
       }
       hasPrev[i] = 1;
       prevHeading[i] = pose.heading;
       prevX[i] = pose.x;
       prevZ[i] = pose.z;
+    }
+  });
+
+  // Place bodies, wheels, steering wheels and crew at symbol scale k. Runs at
+  // the main view's scale every frame, and at true size for the cabin camera.
+  useScaledPose((viewK) => {
+    const { obj, lift, bodyM, root, person, wheelTurns, spin, steeringM, grip } = scratch;
+    const { poseX, poseZ, poseHeading, t } = scratch;
+    const crowd = people.current;
+    const steering = steeringWheels.current;
+    const selected = useApp.getState();
+    const followedVehicle = selected.follow?.kind === 'sim' ? selected.follow.index : null;
+    const trackedVehicle =
+      selected.trackedRiderId === null
+        ? null
+        : crew?.passengers.get(selected.trackedRiderId)?.vehicleId;
+    obj.scale.setScalar(scaleWithView ? viewK : 1);
+    crowd?.begin();
+    for (let i = 0; i < count; i++) {
+      if (hidden?.(i)) {
+        for (const m of bodyMeshes.current) m?.setMatrixAt(i, NOWHERE);
+        for (const m of wheelMeshes.current)
+          for (let a = 0; a < JEEPNEY_AXLES.length; a++)
+            m?.setMatrixAt(i * JEEPNEY_AXLES.length + a, NOWHERE);
+        steering?.setMatrixAt(i, NOWHERE);
+        vehicleMatrices.current[i] = null;
+        continue;
+      }
       const wheelTurn = wheelTurns[i]!;
-      obj.position.set(pose.x, 0, pose.z);
-      obj.rotation.set(0, pose.heading, 0);
+      obj.position.set(poseX[i]!, 0, poseZ[i]!);
+      obj.rotation.set(0, poseHeading[i]!, 0);
       obj.updateMatrix();
       if (onSelect) {
         vehicleMatrices.current[i] ??= new Matrix4();
@@ -256,7 +309,14 @@ export function JeepneyInstances({
       }
       bodyM.multiplyMatrices(obj.matrix, lift);
       for (const m of bodyMeshes.current) m?.setMatrixAt(i, bodyM);
-      for (const m of wheelMeshes.current) m?.setMatrixAt(i, obj.matrix);
+      // Each axle's wheels, rolled forward (about the axle, nose-down: a negative angle).
+      scratch.roll.makeRotationZ(-scratch.spins[i]!);
+      JEEPNEY_AXLES.forEach((x, a) => {
+        scratch.wheelM.makeTranslation(x, WHEEL_RADIUS, 0).multiply(scratch.roll);
+        scratch.wheelM.premultiply(obj.matrix);
+        for (const m of wheelMeshes.current)
+          m?.setMatrixAt(i * JEEPNEY_AXLES.length + a, scratch.wheelM);
+      });
       // The steering wheel turns about its own axis (the wheel frame's z);
       // steering right is clockwise as the driver sees it: a negative angle.
       if (steering) {
@@ -265,7 +325,14 @@ export function JeepneyInstances({
         steering.setMatrixAt(i, steeringM);
       }
       if (!crowd) continue;
-      if (drivers) {
+      if (
+        scaleWithView &&
+        followedVehicle !== i &&
+        trackedVehicle !== i &&
+        Math.hypot(obj.position.x - viewer.position.x, obj.position.z - viewer.position.z) > 250
+      )
+        continue;
+      if (drivers && !driverless?.(i)) {
         const seed = crewSeed(i, SEATS);
         const look = driverAppearance(seed);
         root.multiplyMatrices(obj.matrix, rootFor(DRIVER_MOTION, look.size, local));
@@ -335,7 +402,7 @@ export function JeepneyInstances({
           ref={(m) => {
             wheelMeshes.current[wi] = m;
           }}
-          args={[wheels[part], wheelMaterial(part), count]}
+          args={[wheels[part], wheelMaterial(part), count * JEEPNEY_AXLES.length]}
           castShadow={castShadow}
           frustumCulled={false}
         />

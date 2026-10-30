@@ -1,9 +1,15 @@
 import { useApp, type View } from '@/app/store';
+import { ViewPerformance } from './ViewPerformance';
 
 const VIEWS: Array<{ id: View; label: string }> = [
   { id: 'twin', label: 'Live twin' },
+  { id: 'driver', label: 'Driver app' },
+  { id: 'commuter', label: 'Commuter app' },
   { id: 'doorway', label: 'Sensor lab' },
 ];
+
+/** The Profit & service lab is the operator's: opened from the live twin, and part of it. */
+const tabOf = (view: View): View => (view === 'economics' ? 'twin' : view);
 
 export function Header() {
   const view = useApp((s) => s.view);
@@ -30,8 +36,8 @@ export function Header() {
           <button
             key={v.id}
             type="button"
-            className={view === v.id ? 'is-on' : ''}
-            aria-current={view === v.id ? 'page' : undefined}
+            className={tabOf(view) === v.id ? 'is-on' : ''}
+            aria-current={tabOf(view) === v.id ? 'page' : undefined}
             onClick={() => setView(v.id)}
           >
             {v.label}
@@ -40,6 +46,7 @@ export function Header() {
       </nav>
 
       <div className="header__status">
+        <ViewPerformance />
         <span className="chip" title="Rendering backend">
           {backend ?? 'Starting renderer…'}
         </span>

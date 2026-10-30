@@ -1,8 +1,8 @@
 # Meta Hackathon: CommuteAI
 
-**A GPS-anchored 3D WebGPU digital twin of Philippine jeepney transport paired with a validated under-₱600 ESP32-S3-CAM in-cabin passenger counter, real-time smartphone GPS tracking, and a grounded Meta AI operations assistant.**
+**A GPS-anchored 3D WebGPU digital twin of Metro Manila's jeepneys: one route simulated jeepney by jeepney and rider by rider, the rest of the network estimated around it, with driver and commuter phone interfaces, a simulated cabin passenger counter targeting a low-cost ESP32-camera-to-phone deployment, real-time smartphone GPS tracking, and a grounded Meta AI assistant.**
 
-> 📖 For the complete hardware BOM (`< ₱600`), mathematical models, 6-step ESP32-S3-CAM pipeline checklist, and file-by-file technical reference, see **[`Notes.md`](./Notes.md)**.
+> 📖 See **[`Notes.md`](./Notes.md)** for the hackathon contribution disclosure, Meta AI's role, feature inventory, proposed hardware budget and simulation limits. The author reused a pre-existing 3D foundation; the submission focuses on the new CommuteAI features. Camera deployment and financial benefits still require field validation.
 
 ---
 
@@ -10,91 +10,104 @@
 
 Two pages, one repository, one deployment:
 
-| Page                                        | Who Uses It                   | What It Does                                                                                                                                                                                                                                                                                                                        |
-| ------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`/`** ([`index.html`](./index.html))      | Laptop / Operations Dashboard | 3D WebGPU digital twin: real OpenStreetMap 3D buildings & roads, simulated jeepney fleet, live phone-driven jeepneys, interactive camera views (`Outside 360°`, `Inside ESP32-CAM`, `Front Cab POV`), live `320×240` QVGA Picture-in-Picture head-detection feed, LTFRB fare calculator, **Sensor Lab**, and **Meta AI Assistant**. |
-| **`/track`** ([`track.html`](./track.html)) | Smartphone inside the jeepney | Shares live GPS (or simulated ride) for one session, runs the uncertainty-gated GPS filter and trip state machine (`WAITING → POSSIBLE_VEHICLE → CONFIRMED → ENDED`), and lets the rider explicitly confirm they are on the jeepney (~10 kB bundle, zero Three.js overhead).                                                        |
+| Page                                        | Who Uses It                   | What It Does                                                                                                                                                                                                                                                                              |
+| ------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`/`** ([`index.html`](./index.html))      | Laptop / operations dashboard | 3D WebGPU twin on real OpenStreetMap buildings and roads, with five views (below).                                                                                                                                                                                                        |
+| **`/track`** ([`track.html`](./track.html)) | Smartphone inside the jeepney | Shares live GPS for one session, or a **simulated ride** along Tungko – SM City Fairview for testing indoors. Runs the uncertainty-gated GPS filter and trip state machine (`WAITING → POSSIBLE_VEHICLE → CONFIRMED → ENDED`); the rider confirms which jeepney they are on. No Three.js. |
+
+The dashboard's views (tabs in the header):
+
+| View                     | Whose screen         | What it shows                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Live twin**            | The operator         | The focused route simulated in full (default **Tungko – SM City Fairview**, 60 jeepneys, a working day from 5 AM: drivers set out, rush-hour traffic, terminal lines, refuelling, boundary and owner-drivers, riders walking or taking a tricycle from the side streets), every other GTFS route as an estimated flow, phones on the road, the fleet's money, every jeepney's data (CSV), and the assistant. |
+| **Profit & service lab** | The operator         | Opened from the Live twin. One corridor's fleet over 30-day months, with and without CommuteAI (and with the Muse voice assistant), in a background worker; ledger and audit export.                                                                                                                                                                                                                         |
+| **Driver app**           | One driver's phone   | Next stop STOP / PASS and why, stops ahead, people approaching, the jeepney in front, diesel to the terminal, gas stations ahead with DOE prices, my earnings, and voice questions ("Hey Commute, …").                                                                                                                                                                                                       |
+| **Commuter app**         | One commuter's phone | Trip planner anywhere in Metro Manila (direct or one change, walk or tricycle to the stop), which jeepney takes you and whether it has a seat for you, fare by rider type, and following your own trip through the twin.                                                                                                                                                                                     |
+| **Sensor lab**           | Test bench           | The simulated cabin camera's count next to simulation ground truth, with pipeline telemetry.                                                                                                                                                                                                                                                                                                                         |
+
+The simulated day keeps running while you are in the Profit & service lab or the Sensor lab.
 
 ```mermaid
 flowchart LR
-  subgraph Phone["Smartphone (/track.html)"]
-    GPS["Browser Geolocation / Sim Ride"] --> Filter["GpsFilter (Noise Rejection)"]
+  subgraph Phone["Smartphone (/track)"]
+    GPS["Browser Geolocation / Simulated ride"] --> Filter["GpsFilter (Noise Rejection)"]
     Filter --> Trip["Trip State Machine (Confirm)"]
   end
 
-  subgraph Edge["Jeepney Cabin Hardware (< ₱600)"]
-    ESP["ESP32-S3-CAM (320×240 @ 24 FPS)"] --> Detect["YOLOv8n Head Detector"]
+  subgraph Edge["Cabin simulation — proposed ESP32 + phone deployment"]
+    ESP["Virtual camera (320×240 @ 24 FPS)"] --> Detect["Simulated head detections (future YOLO on phone)"]
     Detect --> Track["CentroidTracker + Door Crossings"]
     Track --> Count["PassengerCounter (Crossings + Head Floor)"]
   end
 
   Trip -- "Firebase RTDB / Loopback" --> Twin["3D WebGPU Digital Twin (/)"]
-  Count -- "24 Hz Telemetry & PiP" --> Twin
+  Count -- "Simulated telemetry & PiP" --> Twin
   OSM["OpenFreeMap Vector Tiles"] -- "Web Worker 3D Meshes" --> Twin
-  Twin -- "JSON Telemetry Snapshot" --> MetaAPI["Vercel /api/assist (Meta AI)"]
+  GTFS["Metro Manila GTFS network (public/data)"] --> Twin
+  Twin -- "What the person's screen shows" --> MetaAPI["/api/assist (planner, then Meta AI)"]
 ```
 
 ---
 
 ## 🛠️ Tech Stack & Why
 
-| Layer            | Choice                                                            | Version                        | Reason                                                                                      |
-| ---------------- | ----------------------------------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------- |
-| **UI**           | React + TypeScript (strict)                                       | `^19.3.1` / `^6.0.3`           | Typed contracts between phone, transport, simulation, and 3D scene                          |
-| **3D Engine**    | Three.js + React Three Fiber, **`WebGPURenderer`**                | `^0.186.1` / `^9.8.2`          | WebGPU where available with automatic WebGL2 fallback; identical code across devices        |
-| **3D Helpers**   | `@react-three/drei`                                               | `^10.7.9`                      | `MapControls` orbit/pan controller and HTML world-space markers                             |
-| **Styling**      | SCSS (`sass-embedded`, tokens + partials)                         | `^1.106.1`                     | Light/dark themes via CSS variables with zero runtime CSS-in-JS cost                        |
-| **Motion**       | GSAP (`@gsap/react`)                                              | `^3.15.0`                      | Smooth camera transitions and counter badge flashes, never blocking the 60 FPS loop         |
-| **State**        | Zustand for UI + plain TS classes for sim                         | `^5.0.16`                      | 60 FPS vehicle/passenger simulation state never triggers React re-renders                   |
-| **Server / AI**  | Vercel Serverless Functions in [`/api`](./api)                    | Node `>=22`                    | Keeps `META_API_KEY` server-only; queries Meta's OpenAI-compatible chat completions API     |
-| **Realtime**     | Firebase Realtime Database + Loopback                             | `^13.1.0`                      | Streams phone GPS to laptop over the internet (or zero-config across browser tabs)          |
-| **3D Map**       | OpenFreeMap vector tiles (`@mapbox/vector-tile`, `pbf`, `earcut`) | `^3.0.0` / `^5.1.2` / `^3.2.4` | Free, no API key, real extruded 3D buildings, roads, water, and parks built in a Web Worker |
-| **Build & Test** | Vite + Vitest + ESLint + Prettier                                 | `^8.3.5` / `^5.0.5`            | Multi-page build, HTTPS phone dev mode, and **66 automated unit/integration tests**         |
-
-**Firebase vs Vercel, in one line:** Vercel runs server-only secrets (the Meta AI call in [`/api/assist`](./api/assist.ts)); Firebase is only the realtime GPS pipe.
+| Layer            | Choice                                                            | Version                        | Reason                                                                                                     |
+| ---------------- | ----------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **UI**           | React + TypeScript (strict)                                       | `^19.3.1` / `^6.0.3`           | Typed contracts between phone, transport, simulation, and 3D scene                                         |
+| **3D Engine**    | Three.js + React Three Fiber, **`WebGPURenderer`**                | `^0.186.1` / `^9.8.2`          | WebGPU where available with automatic WebGL2 fallback; identical code across devices                       |
+| **3D Helpers**   | `@react-three/drei`                                               | `^10.7.9`                      | `MapControls` orbit/pan controller                                                                         |
+| **Styling**      | SCSS (`sass-embedded`, tokens + partials)                         | `^1.106.1`                     | Light/dark themes via CSS variables with zero runtime CSS-in-JS cost                                       |
+| **Motion**       | GSAP (`@gsap/react`)                                              | `^3.15.0`                      | Smooth camera transitions and counter badge flashes, never blocking the 60 FPS loop                        |
+| **State**        | Zustand for UI + plain TS classes for sim                         | `^5.0.16`                      | 60 FPS vehicle/passenger simulation state never triggers React re-renders                                  |
+| **Server / AI**  | Serverless functions in [`/api`](./api)                           | Node `>=22`                    | Keeps API keys server-only; Meta chat and transcription; optional ElevenLabs/Azure speech output             |
+| **Realtime**     | Firebase Realtime Database + Loopback                             | `^13.1.0`                      | Streams phone GPS to laptop over the internet (or zero-config across browser tabs)                         |
+| **3D Map**       | OpenFreeMap vector tiles (`@mapbox/vector-tile`, `pbf`, `earcut`) | `^3.0.0` / `^5.1.2` / `^3.2.4` | Free, no API key, real extruded 3D buildings, roads, water, and parks built in a Web Worker                |
+| **Build & Test** | Vite + Vitest + ESLint + Prettier                                 | `^8.3.5` / `^5.0.5`            | Multi-page build, HTTPS phone dev mode, the `/api` functions in the dev server, unit and integration tests |
 
 ---
 
 ## 🎮 Interactive 3D Controls & Camera Modes
 
-- **Click Any Jeepney Directly in 3D:**
-  - Click a jeepney's **body** in the 3D scene (or choose it from the top toolbar dropdown / right-hand **Simulated fleet** panel) to follow it in **Outside view**.
-  - Click the **front cab/hood** of a monitored jeepney (or press **Front POV**) to sit inside the front cab beside the driver and watch the live push-pull steering wheel hand motion, pedal footwork, dashboard gauges, windshield wipers, and road ahead.
-- **360° Free Orbit & Zoom (Outside View):**
-  - **Left-drag** to rotate 360° around the jeepney cabin (`x = -0.5, y = 1.2`), **scroll** to zoom right up to the windows (`minDistance = 0.35 m`), and **right-drag** to pan—with zero lag or rubber-banding while the jeepney moves and turns.
-- **Inside View (ESP32-S3-CAM Lens) & FOV Cone Toggle:**
-  - Press **Inside view** to look directly through the ceiling-mounted `ESP32-S3-CAM` wide-angle lens (`(1.2, 2.12, 0)` looking toward the rear doorway `REAR_X = -3.1`).
-  - Press **Hide FOV cone / Show FOV cone** in the toolbar (or Sensor Lab panel) to toggle the red 3D camera frustum inside the cabin.
+- **Over the map:** the camera toolbar is at the top left (whole route, street view, choose or ride a jeepney, Front POV, Inside view, FOV cone). The simulation's clock and settings are at the bottom left: day and time, speed (paused to 300×), skip nights, other routes shown or hidden, and **All jeepneys data**.
+- **Click any jeepney in 3D:** its **body** follows it from outside; its **front cab** puts you in the seat beside the driver (Front POV, with a rear-view mirror). A jeepney of another route focuses that route: the twin takes it over from its flow, the jeepneys where they were.
+- **Ride a jeepney / Next jeepney** picks the next one out on the road (parked ones are off the road and not drawn); at night, when all are parked, any.
+- **Outside view:** left-drag to orbit, scroll to zoom up to the windows, right-drag to pan, all while the jeepney moves.
+- **Inside view:** through the ceiling-mounted ESP32-S3-CAM lens, with the camera's detections in the picture-in-picture.
 
 ---
 
 ## 📂 Repository Layout
 
 ```text
-api/                          Vercel Serverless Functions (server-only)
-  assist.ts                   POST /api/assist  → Meta model explains live twin numbers
-  health.ts                   GET  /api/health  → Checks META_API_KEY and META_MODEL
-  _lib/meta.ts                Meta OpenAI-compatible chat completions client
+api/                          Serverless functions (server-only keys)
+  assist.ts                   POST /api/assist      planner answer, then Meta AI explains it (cached 60 s)
+  plan.ts                     POST /api/plan        the deterministic planner only (no credit)
+  transcribe.ts               POST /api/transcribe  Muse voice transcription of one recorded question
+  speak.ts                    POST /api/speak       Filipino/English voice (ElevenLabs or Azure), optional
+  health.ts                   GET  /api/health      which server features are configured
+  _lib/                       Meta client, planner, arrival advice (shared code, not routes)
+public/data/                  Metro Manila network (GTFS routes and stops), landmarks, gas stations
 src/
-  core/                       Pure TypeScript domain & simulation logic (no React/Three, unit tested)
-    geo/                      lat/lng ↔ local metres, Polyline (map matching), RDP simplify, route loader
-    tracking/                 GpsFilter (noise rejection), TripState machine, LiveVehicle (smoothing + staleness)
-    doorway/                  CabinPipeline (24 Hz head detector model), CentroidTracker, PassengerCounter, DoorwaySim
-    people/                   RiderMotion (5-stage walk/step/stoop/aisle/turn/sit), StopLayout, PassengerSystem
-    map/                      Vector tile → 3D meshes (roads, water, parks, extruded buildings, road clearance)
-    fleet/                    FleetSim (simulated jeepneys, headways, stop dwell timers)
-    fare.ts                   LTFRB traditional jeepney fare (₱14 first 4 km + ₱2/km, 20% discount)
-  data/                       Bundled route: Malaria – SM City Fairview (Quirino Hwy, 6.33 km, 8 OSM stops)
+  core/                       Pure TypeScript domain and simulation logic (no React/Three, unit tested)
+    advisory/                 What the driver, commuter and operator screens say; dispatch; trip budgets
+    economics/                The profit model behind the Profit & service lab (runs in a worker)
+    fleet/                    FleetSim: the focused route's jeepneys through the day; scenarios
+    network/                  The GTFS network, route flows, trip planning, place search
+    people/                   Riders: first mile, queues, boarding/alighting choreography, side streets
+    doorway/                  Cabin camera pipeline: detector model, CentroidTracker, PassengerCounter
+    fuel/                     Gas stations and DOE diesel prices
+    geo/ tracking/ map/       Projection and routes; GPS filter, trip state, live vehicles; map tiles
+  data/                       Bundled route: Tungko – SM City Fairview; fuel and diesel data
   map/                        Tile loader + Web Worker that builds map meshes off the main thread
-  net/                        Transport interface: Firebase Realtime DB or same-browser Loopback; /api client
-  app/                        App shell, Zustand store, TwinRuntime & DoorwayRuntime (60 FPS state outside React)
-  scene/                      R3F + WebGPU: CameraRig, instanced Sarao jeepneys, articulated 9-mesh people, PiP renderer
-  ui/                         Header, ViewControls, TwinPanel, DoorwayPanel, AssistPanel, GSAP CounterBadge, PipOverlay
-  tracker/                    Mobile phone GPS web app (/track.html)
-  styles/                     SCSS design tokens, base, components, dashboard & tracker stylesheets
-scripts/fetch-route.mjs       CLI tool to build a route GeoJSON from OSM relations or OSRM + nearby bus stops
-database.rules.json           Firebase Realtime Database rules (auth required, payload schema validated)
-Notes.md                      Complete hardware cost proof, pipeline checklist, math models & file reference
+  net/                        Transport (Firebase or same-browser loopback), /api clients, voice
+  app/                        App shell, Zustand store, TwinRuntime & DoorwayRuntime, network glue
+  scene/                      R3F + WebGPU: camera rig, instanced jeepneys and people, PiP renderer
+  ui/                         Header, toolbar, panels, the phone apps, the Profit & service lab
+  tracker/                    The phone tracker (/track), including the simulated ride
+  styles/                     SCSS design tokens, base, components, dashboard and tracker styles
+scripts/                      Build the network, places and fuel data; fetch routes; ROI simulation
+database.rules.json           Firebase Realtime Database rules (auth required, payload validated)
+Notes.md                      Hardware cost proof, pipeline checklist, math models, file reference
 ```
 
 ---
@@ -105,17 +118,19 @@ Notes.md                      Complete hardware cost proof, pipeline checklist, 
 
 ```bash
 npm install
-npm run dev          # Starts http://localhost:5173 (3D Twin) and http://localhost:5173/track.html (Phone Tracker)
+npm run dev          # http://localhost:5173 (twin) and http://localhost:5173/track.html (phone tracker)
 ```
 
-**Zero-config first look:** Without `.env` Firebase credentials, the app automatically uses a same-browser loopback (`BroadcastChannel` + `localStorage`). Open `/` in one browser tab and `/track.html` in a second tab; starting a GPS or simulated ride in the tracker tab immediately drives a live 3D jeepney on the dashboard.
+`npm run dev` also serves the `/api` functions, reading their keys from `.env` (see step 4). Without keys the assistant still answers from the deterministic planner. `vercel dev` works too.
+
+**Zero-config first look:** Without Firebase credentials in `.env`, the app uses a same-browser loopback (`BroadcastChannel`). Open `/` in one window and `/track.html` in a second window beside it; tick **Simulate a ride** and start: a phone-driven jeepney drives along Tungko – SM City Fairview on the dashboard, under **Phones on the road**. Keep the tracker visible (its own window, not a background tab): browsers slow down timers in background tabs.
 
 ### 2. Run Tests, Typecheck, Lint & Production Build
 
 ```bash
-npm test             # Runs all 66 Vitest unit & 10-minute integration tests across 9 test suites
-npm run typecheck    # Runs tsc -b --noEmit
-npm run lint         # Runs ESLint across all TypeScript/React files
+npm test             # Vitest unit and integration tests (the long simulations take ~10 minutes)
+npm run typecheck    # tsc -b --noEmit
+npm run lint         # ESLint across all TypeScript/React files
 npm run build        # Typechecks and builds production bundles into dist/
 ```
 
@@ -133,34 +148,36 @@ npm run build        # Typechecks and builds production bundles into dist/
    ```
    and open `https://<your-laptop-LAN-IP>:5173/track.html` on your phone (accept the local self-signed certificate).
 
-### 4. Meta AI Operations Assistant (`/api/assist`)
+### 4. Meta AI Assistant and Voice (`/api`)
 
-Set `META_API_KEY`, `META_MODEL` (the model ID from the Meta Hackathon portal), and optionally `META_API_BASE` (`https://api.llama.com/compat/v1`) in **Vercel → Project → Settings → Environment Variables** (or in `.env` when running `npx vercel dev` locally).
+Set `META_API_KEY`, `META_MODEL` (the model ID from the Meta Hackathon portal), and optionally `META_API_BASE` (`https://api.llama.com/compat/v1`) in `.env` for local development, and in **Vercel → Project → Settings → Environment Variables** for the deployment. `META_SAVE_CREDITS=true` answers from the planner only (no credit spent). For a Filipino reading voice, set `ELEVENLABS_API_KEY` (or `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION`). None of these is ever sent to the browser.
 
 ---
 
-## 🗺️ The 3D Map & Route
+## 🗺️ The 3D Map & Routes
 
-The digital twin opens on **Malaria – SM City Fairview** (`6.33 km` along Quirino Highway, Caloocan / Quezon City) on a real 3D vector map:
+The twin opens on **Tungko – SM City Fairview** (Quirino Highway, the bundled route) on a real 3D vector map, with the Metro Manila network around it:
 
-- **3D Map:** OpenStreetMap vector tiles served by [OpenFreeMap](https://openfreemap.org) (free, no API key required). Tiles around the route are decoded and triangulated inside a background Web Worker (`land`, `water`, `roadCasing`, `roadFill`, and extruded 3D `buildings` clipped for road clearance). Set `VITE_MAP_TILEJSON=off` in `.env` for a 100% offline synthetic road.
-- **Custom Routes:** Generate a new route with `npm run route:fetch -- --relation <osm_id>` or `npm run route:fetch -- --osrm "lng1,lat1;lng2,lat2"`, or record a live GPS trace on `/track.html`, click **"Use trace as route"** on the dashboard, and press **"Download"**.
+- **3D Map:** OpenStreetMap vector tiles served by [OpenFreeMap](https://openfreemap.org) (free, no API key required), decoded and triangulated in a background Web Worker. Set `VITE_MAP_TILEJSON=off` in `.env` to run without the map.
+- **The network:** the routes of the DOTC Philippine Transit GTFS feed (2015, via Sakay.ph) whose OSRM road path fits their stops, in [`public/data`](./public/data). Search a route, or click one of its jeepneys, to simulate it in full.
+- **Custom Routes:** `npm run route:fetch -- --relation <osm_id>` or `npm run route:fetch -- --osrm "lng1,lat1;lng2,lat2"`; or record a live GPS trace on `/track.html`, click **Use trace as route** on the dashboard, and **Download**.
 
 ---
 
 ## ✅ What the System Claims (and What It Does Not)
 
 - **Rider Confirmation Required:** A passenger's phone proves **where the phone is**, not which vehicle it is in. A trip transitions from `POSSIBLE_VEHICLE` to `CONFIRMED` only when the rider explicitly confirms on `/track.html`.
+- **Simulated Is Labelled:** a simulated ride's session ID starts with `sim-` and the tracker says it is not the phone's location; the other routes' jeepneys, seats and times are estimates from how a route usually runs, and the app says so where it shows them.
 - **Uncertainty-Gated Speed:** GPS displacements smaller than the combined horizontal accuracy $\sqrt{\sigma_0^2 + \sigma_n^2}$ are treated as zero speed, eliminating stationary indoor/tabletop GPS drift.
 - **Honest Staleness:** A live vehicle unheard from for `8 s` is marked **stale**, and after `30 s` **lost**. Pose extrapolation along the route is capped at `2 s`.
-- **Front-Ceiling ESP32-S3-CAM Head Counter:** Mounted at `(1.2, 2.12, 0)` looking back over all seats to the rear doorway (`320×240` QVGA @ `24 FPS`). Combines 3-frame confirmed doorway transitions with a steady visible-head lower bound (`SteadyCount` 80th percentile over 24 frames held for `600 ms`). Validated across multiple 10-minute end-to-end 3D simulations in [`cabinCamera.test.ts`](./src/scene/doorway/cabinCamera.test.ts).
-- **Grounded AI Assistant:** [`api/assist.ts`](./api/assist.ts) strictly narrates numbers present in the live JSON telemetry snapshot and explicitly reports when a requested metric is missing rather than guessing.
+- **Simulated Cabin Head Counter:** A virtual front-ceiling camera combines 3-frame confirmed doorway transitions with a visible-head lower bound, tested in [`cabinCamera.test.ts`](./src/scene/doorway/cabinCamera.test.ts). Detections are generated from virtual people. ESP32 video capture, YOLO inference on a phone, hardware cost and real-world accuracy remain to be validated.
+- **Grounded AI Assistant:** [`api/assist.ts`](./api/assist.ts) first works the answer out with the deterministic planner, then has Meta AI explain only the numbers on the person's screen and in the plan; if Meta is unreachable, the planner's answer is returned.
 
 ---
 
 ## ⚡ Performance Architecture
 
-- **~14 Draw Calls for the Entire Fleet:** One `InstancedMesh` per material slot renders all jeepneys regardless of fleet size (`8` or `100+`), paired with zero-draw-call local OBB raycasting (`HIT_BOX`) for instant 3D clicking.
-- **9 Draw Calls for All Articulated People:** Every passenger and animated driver across the entire route is rendered by 9 shared `InstancedMesh` body-part buffers (`torso`, `pelvis`, `head`, `hair`, `thigh`, `shin`, `foot`, `sleeve`, `forearm`).
-- **Zero React Re-Renders on the 60 FPS Loop:** Simulation state lives in plain TypeScript classes ([`TwinRuntime`](./src/app/twinRuntime.ts), [`DoorwayRuntime`](./src/app/doorwayRuntime.ts)) mutated in place inside `useFrame` with pre-allocated scratch vectors/matrices. HUD panels poll at `2–8 Hz`.
-- **Shadow & PiP Optimizations:** Device pixel ratio is capped at `1.75`, the directional shadow frustum tracks the camera target, and shadow-map updates are skipped during the `320×240` PiP render pass.
+- **~14 Draw Calls for the Entire Fleet:** One `InstancedMesh` per material slot renders all jeepneys regardless of fleet size, paired with zero-draw-call local OBB raycasting (`HIT_BOX`) for instant 3D clicking. Other routes' jeepneys: the nearest in full, the rest as simple blocks.
+- **9 Draw Calls for All Articulated People:** Every passenger and animated driver is rendered by 9 shared `InstancedMesh` body-part buffers.
+- **Zero React Re-Renders on the 60 FPS Loop:** Simulation state lives in plain TypeScript classes ([`TwinRuntime`](./src/app/twinRuntime.ts), [`DoorwayRuntime`](./src/app/doorwayRuntime.ts)) mutated in place inside `useFrame`. HUD panels poll at `0.2–8 Hz`; network-wide totals are worked out every 5 s.
+- **Shadow & PiP Optimizations:** Device pixel ratio is capped at `1.75`, the shadow frustum tracks the camera target, and the `320×240` PiP is redrawn at the camera's own 24 FPS, not the screen's.

@@ -7,8 +7,21 @@ import { useRuntimes } from '@/app/runtimeContext';
 import { useApp } from '@/app/store';
 import { CounterBadge } from './CounterBadge';
 import { useTicker } from './useTicker';
+import { VehiclePicker, VehicleSpecPanel } from './VehicleSpecPanel';
 
 export function DoorwayPanel() {
+  const vehicle = useApp((s) => s.labVehicle);
+  if (vehicle !== 'jeepney')
+    return (
+      <div className="panel__body">
+        <VehiclePicker />
+        <VehicleSpecPanel kind={vehicle} />
+      </div>
+    );
+  return <JeepneyLabPanel />;
+}
+
+function JeepneyLabPanel() {
   useTicker(8);
   const { doorway } = useRuntimes();
   const showFov = useApp((s) => s.showFov);
@@ -19,6 +32,7 @@ export function DoorwayPanel() {
 
   return (
     <div className="panel__body">
+      <VehiclePicker />
       <section className="section">
         <h3 className="section__title">Driver phone dashboard</h3>
         <div className="counters">

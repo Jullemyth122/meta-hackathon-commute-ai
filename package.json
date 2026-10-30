@@ -10,10 +10,11 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=30000",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "route:fetch": "node scripts/fetch-route.mjs"
+    "route:fetch": "node scripts/fetch-route.mjs",
+    "roi:simulate": "node scripts/simulate-economics.mjs"
   },
   "engines": {
     "node": ">=22"

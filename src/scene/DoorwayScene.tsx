@@ -15,10 +15,13 @@ import { useEffect, useMemo, useRef } from 'react';
 import { BufferGeometry, LineBasicMaterial, LineSegments, Matrix4, Vector3 } from 'three';
 import { useRuntimes } from '@/app/runtimeContext';
 import { useApp } from '@/app/store';
+import type { VehicleKind } from '@/core/vehicles/specs';
 import type { VisiblePerson } from '@/core/doorway/pipeline';
 import { newRiderPose } from '@/core/people/riderMotion';
 import { CABIN_CAM, createCabinCamera, projectPerson } from './doorway/cabinCamera';
 import { PipRenderer } from './doorway/PipRenderer';
+import { createDoorCamera, doorCameras } from './vehicles/doorCamera';
+import { VehicleShowcase } from './vehicles/VehicleShowcase';
 import { BODY_LIFT, HALF_WIDTH, REAR_X } from './jeepney/jeepneyGeometry';
 import { JeepneyInstances, type GroundPose } from './jeepney/JeepneyInstances';
 import { PeopleInstances, type PeopleHandle } from './people/PeopleInstances';
@@ -38,6 +41,67 @@ const PARKED: readonly ['red'] = ['red'];
 const RIDER_SEED = 200_000;
 
 export function DoorwayScene() {
+  const vehicle = useApp((s) => s.labVehicle);
+  const door = useApp((s) => s.labDoor);
+  return vehicle === 'jeepney' ? <JeepneyLab /> : <VehicleLab kind={vehicle} door={door} />;
+}
+
+/** The modern jeepney, UV Express or bus at the kerb; the picture-in-picture is its door camera. */
+function VehicleLab({ kind, door }: { kind: VehicleKind; door: number }) {
+  const camera = useMemo(() => {
+    const cams = doorCameras(kind);
+    return createDoorCamera(cams[Math.min(door, cams.length - 1)]!);
+  }, [kind, door]);
+  return (
+    <>
+      <LabStage
+        target={kind === 'bus' ? [0, 1.6, 0] : [0, 1.2, 0]}
+        maxDistance={kind === 'bus' ? 30 : 22}
+      />
+      <VehicleShowcase kind={kind} />
+      <PipRenderer espCamera={camera} />
+    </>
+  );
+}
+
+/** Light, ground and kerb, and the orbit camera, for any vehicle in the lab. */
+function LabStage({
+  target,
+  maxDistance = 22,
+}: {
+  target: [number, number, number];
+  maxDistance?: number;
+}) {
+  return (
+    <>
+      <color attach="background" args={['#e8e9e9']} />
+      <hemisphereLight args={['#ffffff', '#dcdcd8', 1.6]} />
+      <directionalLight
+        position={[5, 10, 6]}
+        intensity={1.8}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+      />
+      <OrbitControls
+        makeDefault
+        target={target}
+        maxPolarAngle={Math.PI / 2.05}
+        minDistance={2}
+        maxDistance={maxDistance}
+      />
+      <mesh rotation-x={-Math.PI / 2} position-y={-0.01} receiveShadow>
+        <planeGeometry args={[60, 60]} />
+        <meshStandardMaterial color="#efefed" />
+      </mesh>
+      <mesh rotation-x={-Math.PI / 2} receiveShadow>
+        <planeGeometry args={[40, 5]} />
+        <meshStandardMaterial color="#d0d2d4" />
+      </mesh>
+    </>
+  );
+}
+
+function JeepneyLab() {
   const { doorway } = useRuntimes();
   const camera = useMemo(createCabinCamera, []);
   const people = useRef<PeopleHandle>(null);
@@ -81,31 +145,7 @@ export function DoorwayScene() {
 
   return (
     <>
-      <color attach="background" args={['#e8e9e9']} />
-      <hemisphereLight args={['#ffffff', '#dcdcd8', 1.6]} />
-      <directionalLight
-        position={[5, 10, 6]}
-        intensity={1.8}
-        castShadow
-        shadow-mapSize={[2048, 2048]}
-      />
-      <OrbitControls
-        makeDefault
-        target={[-1.6, 1.1, 0]}
-        maxPolarAngle={Math.PI / 2.05}
-        minDistance={2}
-        maxDistance={22}
-      />
-
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.01} receiveShadow>
-        <planeGeometry args={[60, 60]} />
-        <meshStandardMaterial color="#efefed" />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} receiveShadow>
-        <planeGeometry args={[40, 5]} />
-        <meshStandardMaterial color="#d0d2d4" />
-      </mesh>
-
+      <LabStage target={[-1.6, 1.1, 0]} />
       <JeepneyInstances count={1} liveries={PARKED} poseAt={parkedPose} />
       <PeopleInstances ref={people} capacity={MAX_PEOPLE} />
       <CabinCameraModel />

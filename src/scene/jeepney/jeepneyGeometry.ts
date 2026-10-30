@@ -330,17 +330,39 @@ export function jeepneyBody(): JeepneyParts {
   return merged;
 }
 
-/** Four wheels: tyres and hubs, in ground coordinates (axle at WHEEL_RADIUS). */
+/** The front and rear axles, along the jeepney (ground frame; the axle WHEEL_RADIUS up). */
+export const JEEPNEY_AXLES = [2.12, -2.2] as const;
+/** Wheel nuts on each hub: what shows the wheels turning. */
+const WHEEL_NUTS = 5;
+
+/**
+ * An axle's two wheels, tyres and hubs, centred on the axle (drawn at each
+ * of JEEPNEY_AXLES, WHEEL_RADIUS up, and turned about it as it rolls). Dark
+ * wheel nuts on each hub, so the turning shows.
+ */
 export function jeepneyWheels(): WheelParts {
   if (cachedWheels) return cachedWheels;
   const tires: BufferGeometry[] = [];
   const hubs: BufferGeometry[] = [];
-  for (const x of [2.12, -2.2]) {
-    for (const side of [-1, 1]) {
-      const z = side * 0.86;
-      tires.push(cylinder(WHEEL_RADIUS, WHEEL_RADIUS, 0.26, 22, 'z', x, WHEEL_RADIUS, z));
-      hubs.push(cylinder(0.21, 0.21, 0.02, 20, 'z', x, WHEEL_RADIUS, z + side * 0.135));
-      hubs.push(cylinder(0.07, 0.07, 0.05, 10, 'z', x, WHEEL_RADIUS, z + side * 0.15));
+  for (const side of [-1, 1]) {
+    const z = side * 0.86;
+    tires.push(cylinder(WHEEL_RADIUS, WHEEL_RADIUS, 0.26, 22, 'z', 0, 0, z));
+    hubs.push(cylinder(0.21, 0.21, 0.02, 20, 'z', 0, 0, z + side * 0.135));
+    hubs.push(cylinder(0.07, 0.07, 0.05, 10, 'z', 0, 0, z + side * 0.15));
+    for (let k = 0; k < WHEEL_NUTS; k++) {
+      const a = (k / WHEEL_NUTS) * Math.PI * 2;
+      tires.push(
+        cylinder(
+          0.018,
+          0.018,
+          0.03,
+          6,
+          'z',
+          Math.cos(a) * 0.13,
+          Math.sin(a) * 0.13,
+          z + side * 0.15,
+        ),
+      );
     }
   }
   cachedWheels = { tire: mergeParts(tires)!, hub: mergeParts(hubs)! };

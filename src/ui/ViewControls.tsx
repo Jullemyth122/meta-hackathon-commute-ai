@@ -1,10 +1,16 @@
 /**
- * Overlay on the twin viewport: camera shots, ride-along, map status and the
- * map data credit (required by OpenStreetMap's licence and OpenFreeMap's terms).
+ * Overlay on the twin viewport: camera shots, ride-along, the operator's data
+ * for every jeepney, map status and the map data credit (required by
+ * OpenStreetMap's licence and OpenFreeMap's terms).
  */
 
+import { clockText } from '@/app/earnings';
 import { useRuntimes } from '@/app/runtimeContext';
-import { useApp } from '@/app/store';
+import { jeepneyStatus } from '@/app/status';
+import { KIND_NAME } from '@/core/vehicles/specs';
+import { SPEEDS, useApp } from '@/app/store';
+import { MAX_DAYS } from '@/app/twinRuntime';
+import { FleetData } from './FleetData';
 import { useTicker } from './useTicker';
 
 export function ViewControls() {
@@ -14,84 +20,92 @@ export function ViewControls() {
   const showFov = useApp((s) => s.showFov);
   const setShowFov = useApp((s) => s.setShowFov);
   const requestShot = useApp((s) => s.requestShot);
+  const fleetData = useApp((s) => s.fleetData);
   const hasMap = useApp((s) => s.map.state !== 'off');
   const count = twin.fleet.vehicles.length;
 
   const view = follow?.view ?? 'chase';
-  const rideNext = () =>
-    setFollow({
-      kind: 'sim',
-      index: follow?.kind === 'sim' ? (follow.index + 1) % count : 0,
-      view,
-    });
+  // The next jeepney out on the road: a parked one is not drawn, so riding it
+  // would show an empty street. At night, when all are parked, any will do.
+  const rideNext = () => {
+    const from = follow?.kind === 'sim' ? follow.index + 1 : 0;
+    const order = Array.from({ length: count }, (_, k) => (from + k) % count);
+    const index = order.find((i) => twin.fleet.vehicles[i]?.duty !== 'parked') ?? order[0] ?? 0;
+    setFollow({ kind: 'sim', index, view });
+  };
 
   return (
     <>
-      <div className="view-controls" role="toolbar" aria-label="Camera">
-        <button type="button" className="btn" onClick={() => requestShot('overview')}>
-          Whole route
-        </button>
-        <button type="button" className="btn" onClick={() => requestShot('street')}>
-          Street view
-        </button>
-        <select
-          className="btn view-controls__select"
-          aria-label="Choose a jeepney to monitor"
-          value={follow?.kind === 'sim' ? String(follow.index) : ''}
-          onChange={(e) => {
-            const val = e.target.value;
-            if (val === '') setFollow(null);
-            else setFollow({ kind: 'sim', index: Number(val), view });
-          }}
-        >
-          <option value="">Choose jeepney (or click in 3D)…</option>
-          {twin.fleet.vehicles.map((v, i) => (
-            <option key={v.id} value={i}>
-              {v.plate} ({v.occupancy}/{v.capacity})
-            </option>
-          ))}
-        </select>
-        <button type="button" className="btn btn--primary" onClick={rideNext}>
-          {follow?.kind === 'sim' ? 'Next jeepney' : 'Ride a jeepney'}
-        </button>
-        {follow && (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={view === 'pov'}
-            onClick={() => setFollow({ ...follow, view: view === 'pov' ? 'chase' : 'pov' })}
+      <div className="view-hud">
+        <div className="view-controls" role="toolbar" aria-label="Camera">
+          <button type="button" className="btn" onClick={() => requestShot('overview')}>
+            Whole route
+          </button>
+          <button type="button" className="btn" onClick={() => requestShot('street')}>
+            Street view
+          </button>
+          <select
+            className="btn view-controls__select"
+            aria-label="Choose a jeepney to monitor"
+            value={follow?.kind === 'sim' ? String(follow.index) : ''}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === '') setFollow(null);
+              else setFollow({ kind: 'sim', index: Number(val), view });
+            }}
           >
-            {view === 'pov' ? 'Outside view' : 'Front POV'}
+            <option value="">Choose jeepney (or click in 3D)…</option>
+            {twin.fleet.vehicles.map((v, i) => (
+              <option key={v.id} value={i}>
+                {v.plate}
+                {v.kind !== 'jeepney' && ` · ${KIND_NAME[v.kind]}`} (
+                {v.duty === 'parked' ? 'parked' : `${v.occupancy}/${v.capacity}`})
+              </option>
+            ))}
+          </select>
+          <button type="button" className="btn btn--primary" onClick={rideNext}>
+            {follow?.kind === 'sim' ? 'Next jeepney' : 'Ride a jeepney'}
           </button>
-        )}
-        {follow && (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={view === 'inside'}
-            onClick={() => setFollow({ ...follow, view: view === 'inside' ? 'chase' : 'inside' })}
-          >
-            {view === 'inside' ? 'Outside view' : 'Inside view'}
-          </button>
-        )}
-        {follow?.kind === 'sim' && view === 'chase' && (
-          <button
-            type="button"
-            className="btn"
-            aria-pressed={showFov}
-            onClick={() => setShowFov(!showFov)}
-          >
-            {showFov ? 'Hide FOV cone' : 'Show FOV cone'}
-          </button>
-        )}
-        {follow && (
-          <button type="button" className="btn" onClick={() => setFollow(null)}>
-            Stop following
-          </button>
-        )}
+          {follow && (
+            <button
+              type="button"
+              className="btn"
+              aria-pressed={view === 'pov'}
+              onClick={() => setFollow({ ...follow, view: view === 'pov' ? 'chase' : 'pov' })}
+            >
+              {view === 'pov' ? 'Outside view' : 'Front POV'}
+            </button>
+          )}
+          {follow && (
+            <button
+              type="button"
+              className="btn"
+              aria-pressed={view === 'inside'}
+              onClick={() => setFollow({ ...follow, view: view === 'inside' ? 'chase' : 'inside' })}
+            >
+              {view === 'inside' ? 'Outside view' : 'Inside view'}
+            </button>
+          )}
+          {follow?.kind === 'sim' && view === 'chase' && (
+            <button
+              type="button"
+              className="btn"
+              aria-pressed={showFov}
+              onClick={() => setShowFov(!showFov)}
+            >
+              {showFov ? 'Hide FOV cone' : 'Show FOV cone'}
+            </button>
+          )}
+          {follow && (
+            <button type="button" className="btn" onClick={() => setFollow(null)}>
+              Stop following
+            </button>
+          )}
+        </div>
+        {follow?.kind === 'sim' && <RideCard index={follow.index} />}
       </div>
-      {follow?.kind === 'sim' && <RideCard index={follow.index} />}
-      <MapStatusChip />
+      <SimDock operator />
+      {fleetData && <FleetData />}
       {hasMap && (
         <div className="map-credit">
           ©{' '}
@@ -112,6 +126,115 @@ export function ViewControls() {
   );
 }
 
+/**
+ * The simulated day, bottom left of the map: the day and time, how fast it
+ * runs (up to 300×), skipping nights; for the operator (and the driver,
+ * `fuel`) who is going for diesel; for the operator also the other routes
+ * and every jeepney's data. The phone apps (driver, commuter) show
+ * it too, so a ride can be fast-forwarded there as well.
+ */
+export function SimDock({
+  operator = false,
+  fuel = operator,
+}: {
+  operator?: boolean;
+  fuel?: boolean;
+}) {
+  const speed = useApp((s) => s.simulationSpeed);
+  const setSpeed = useApp((s) => s.setSimulationSpeed);
+  const skipNight = useApp((s) => s.skipNight);
+  const setSkipNight = useApp((s) => s.setSkipNight);
+  const otherRoutes = useApp((s) => s.otherRoutes);
+  const setOtherRoutes = useApp((s) => s.setOtherRoutes);
+  const fleetData = useApp((s) => s.fleetData);
+  const setFleetData = useApp((s) => s.setFleetData);
+  return (
+    <div className="view-dock">
+      <MapStatusChip />
+      <div className="view-dock__row" role="toolbar" aria-label="Simulation">
+        <DayClock />
+        <select
+          className="btn"
+          aria-label="Simulation speed"
+          title="How fast the simulated day runs"
+          value={speed}
+          onChange={(e) => setSpeed(Number(e.target.value))}
+        >
+          {SPEEDS.map((n) => (
+            <option key={n} value={n}>
+              {n === 0 ? 'Paused' : `Speed ${n}×`}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="btn"
+          aria-pressed={skipNight}
+          title="While every jeepney is parked at night, run the clock fast to the morning"
+          onClick={() => setSkipNight(!skipNight)}
+        >
+          {skipNight ? 'Skipping nights' : 'Skip nights'}
+        </button>
+        {fuel && <FuelButton />}
+        {operator && (
+          <button
+            type="button"
+            className="btn"
+            aria-pressed={otherRoutes}
+            title="The other routes' jeepneys (estimated) on the map, around the route simulated in full"
+            onClick={() => setOtherRoutes(!otherRoutes)}
+          >
+            {otherRoutes ? 'Other routes: shown' : 'Other routes: hidden'}
+          </button>
+        )}
+        {operator && (
+          <button
+            type="button"
+            className="btn"
+            aria-pressed={fleetData}
+            onClick={() => setFleetData(!fleetData)}
+          >
+            {fleetData ? 'Hide jeepneys data' : 'All jeepneys data'}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The fleet's diesel at a glance: how many jeepneys are at a station now (in
+ * line or at the pumps), and how many are on their way to one. Clicking
+ * rides along with one (at a station first), to watch it pull in, fill up
+ * and go on.
+ */
+function FuelButton() {
+  useTicker(2);
+  const { twin } = useRuntimes();
+  const setFollow = useApp((s) => s.setFollow);
+  const out = twin.fleet.vehicles.filter((v) => (v.refuel || v.yard) && v.duty !== 'parked');
+  const there = out.filter((v) => v.yard && !v.yard.full);
+  const going = out.filter((v) => !v.yard).length;
+  const next =
+    [...there].sort((a, b) => a.yard!.u - b.yard!.u)[0] ??
+    [...out].sort((a, b) => a.tankL - b.tankL)[0];
+  return (
+    <button
+      type="button"
+      className="btn"
+      disabled={!next}
+      title={
+        next
+          ? 'Ride along with a jeepney going for diesel'
+          : 'Below a quarter of a tank, a jeepney fills up at the next station on its side of the road. About half start the first day full (filled the night before), the rest 20–85%.'
+      }
+      onClick={() => next && setFollow({ kind: 'sim', index: next.id, view: 'chase' })}
+    >
+      {next ? `⛽ ${there.length} at a station · ${going} going` : '⛽ No one low on diesel yet'}
+    </button>
+  );
+}
+
 /** What the followed simulated jeepney is doing right now. */
 function RideCard({ index }: { index: number }) {
   useTicker(4);
@@ -126,6 +249,7 @@ function RideCard({ index }: { index: number }) {
       <span className="ride-card__title">
         <i className={`livery livery--${v.livery}`} aria-hidden="true" />
         <b className="mono">{v.plate}</b>
+        {v.kind !== 'jeepney' && <span className="chip">{KIND_NAME[v.kind]}</span>}
         <span className="chip chip--warn">Simulated</span>
       </span>
       <span className="kv">
@@ -140,7 +264,11 @@ function RideCard({ index }: { index: number }) {
           {camera ? `${camera.counts.current} (sees ${camera.seenNow} heads)` : '–'}
         </span>
         <span>Status</span>
-        <span>{twin.crew.status(index)}</span>
+        <span>{jeepneyStatus(twin, v)}</span>
+        <span>Diesel in tank</span>
+        <span className="mono">
+          {v.tankL.toFixed(0)} of {v.tankCapacityL.toFixed(0)} L
+        </span>
         <span>{v.currentStop === null ? 'Next stop' : 'At stop'}</span>
         <span>
           {v.currentStop === null ? (next?.name ?? '–') : twin.route.stops[v.currentStop]?.name}
@@ -150,6 +278,28 @@ function RideCard({ index }: { index: number }) {
         Drag to rotate · Scroll to zoom · Right-drag to move · Click any jeepney
       </small>
     </div>
+  );
+}
+
+/** Which day of the month it is in the simulation, and the time: what the ledger runs on. */
+function DayClock() {
+  useTicker(2);
+  const { twin } = useRuntimes();
+  const skipNight = useApp((s) => s.skipNight);
+  const speed = useApp((s) => s.simulationSpeed);
+  const day = Math.min(twin.fleet.dayNumber, MAX_DAYS);
+  const note = twin.finished
+    ? ` · all ${MAX_DAYS} days done`
+    : twin.night
+      ? skipNight && speed > 0
+        ? ' · night: every jeepney parked, skipping to morning'
+        : ' · night: every jeepney parked'
+      : '';
+  return (
+    <span className="chip day-clock" title="Simulated day of the month and time">
+      Day {day} of {MAX_DAYS} · {clockText(twin.clockS).slice(0, 5)}
+      {note}
+    </span>
   );
 }
 
@@ -163,10 +313,7 @@ function MapStatusChip() {
         ? `Map partly loaded (${map.loaded}/${map.total})`
         : 'Map unavailable (offline?). The route and fleet still work.';
   return (
-    <div
-      className={`map-status chip ${map.state === 'loading' ? '' : 'chip--warn'}`}
-      title={map.message}
-    >
+    <div className={`chip ${map.state === 'loading' ? '' : 'chip--warn'}`} title={map.message}>
       {text}
     </div>
   );

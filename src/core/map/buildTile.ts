@@ -181,7 +181,9 @@ export function buildTile(
 
 /** Typed arrays to hand over to the main thread without copying. */
 export function transferables(t: TileMeshes): ArrayBuffer[] {
-  return Object.values(t.layers).flatMap((m) =>
-    m ? [m.position.buffer, m.normal.buffer, m.color.buffer, m.index.buffer] : [],
-  ) as ArrayBuffer[];
+  return [
+    ...Object.values(t.layers).flatMap((m) =>
+      m ? [m.position.buffer, m.normal.buffer, m.color.buffer, m.index.buffer] : [],
+    ),
+  ] as ArrayBuffer[];
 }

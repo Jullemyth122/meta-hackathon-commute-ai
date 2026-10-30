@@ -18,9 +18,14 @@ export const FLAT_ORDER = {
   water: -80,
   roadCasing: -70,
   roadFill: -60,
+  /** Gas station forecourts: over the roads they open onto, under the route. */
+  fuel: -58,
   routeRoad: -55,
   routeCasing: -50,
   routeFill: -45,
+  /** A planned trip end to end (TripPlanLayer.tsx): over the route it rides. */
+  tripCasing: -42,
+  tripFill: -40,
 } as const;
 
 /** Make a material paint in order instead of depth testing (see above). */

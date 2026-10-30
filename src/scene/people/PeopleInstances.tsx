@@ -11,10 +11,24 @@
  *
  * A person's colours depend only on `seed`, and colours are re-uploaded only
  * for instance slots whose occupant changed.
+ *
+ * With `fading`, each person also has a visibility from 0 to 1 (people
+ * arriving and leaving). It is drawn as a screen-door dither: a pixel is
+ * kept only where its hash is below the visibility. No transparency, so no
+ * sorting between overlapping body parts, and fully visible people cost
+ * nothing extra.
  */
 
-import { useImperativeHandle, useMemo, useRef, type Ref } from 'react';
-import { Matrix4, MeshStandardMaterial, type InstancedMesh } from 'three';
+import { useEffect, useImperativeHandle, useMemo, useRef, type Ref } from 'react';
+import {
+  InstancedBufferAttribute,
+  Matrix4,
+  MeshStandardMaterial,
+  type InstancedMesh,
+  type Material,
+} from 'three';
+import { hash, instancedBufferAttribute, screenCoordinate } from 'three/tsl';
+import { MeshStandardNodeMaterial } from 'three/webgpu';
 import {
   appearance,
   PAIRED_PARTS,
@@ -31,29 +45,59 @@ export interface PeopleHandle {
   begin(): void;
   /**
    * Add one person. `look` defaults to appearance(seed); pass one to dress
-   * someone differently (the driver). Ignored once capacity is reached.
+   * someone differently (the driver). `visibility` (0–1) only counts with
+   * `fading`. Ignored once capacity is reached.
    */
-  emit(root: Matrix4, pose: PersonPose, seed: number, look?: Appearance): void;
+  emit(root: Matrix4, pose: PersonPose, seed: number, look?: Appearance, visibility?: number): void;
   end(): void;
 }
 
 const PARTS: readonly BodyPart[] = [...SINGLE_PARTS, ...PAIRED_PARTS];
 const isPaired = (p: BodyPart) => (PAIRED_PARTS as readonly string[]).includes(p);
+const ROUGHNESS = 0.72;
 
 let material: MeshStandardMaterial | null = null;
+
+/** Per-part visibility buffers and the dithering materials that read them. */
+function fadeMaterials(capacity: number) {
+  const visibility = {} as Record<BodyPart, InstancedBufferAttribute>;
+  const materials = {} as Record<BodyPart, Material>;
+  for (const part of PARTS) {
+    const attr = new InstancedBufferAttribute(
+      new Float32Array(isPaired(part) ? capacity * 2 : capacity).fill(1),
+      1,
+    );
+    const m = new MeshStandardNodeMaterial({ roughness: ROUGHNESS });
+    const pixel = screenCoordinate.x.floor().add(screenCoordinate.y.floor().mul(4096));
+    m.maskNode = instancedBufferAttribute<'float'>(attr, 'float').greaterThan(hash(pixel));
+    visibility[part] = attr;
+    materials[part] = m;
+  }
+  return { visibility, materials };
+}
 
 export function PeopleInstances({
   capacity,
   castShadow = true,
+  fading = false,
   ref,
 }: {
   capacity: number;
   castShadow?: boolean;
+  /** Draw each person's `visibility` (see emit). */
+  fading?: boolean;
   ref: Ref<PeopleHandle>;
 }) {
   const geometries = rigGeometries();
-  material ??= new MeshStandardMaterial({ roughness: 0.72 });
+  material ??= new MeshStandardMaterial({ roughness: ROUGHNESS });
   const meshes = useRef<Partial<Record<BodyPart, InstancedMesh | null>>>({});
+  const fade = useMemo(() => (fading ? fadeMaterials(capacity) : null), [fading, capacity]);
+  useEffect(
+    () => () => {
+      if (fade) for (const part of PARTS) fade.materials[part].dispose();
+    },
+    [fade],
+  );
 
   const state = useMemo(
     () => ({
@@ -84,7 +128,7 @@ export function PeopleInstances({
         state.n = 0;
         state.coloursDirty = false;
       },
-      emit(root, pose, seed, lookOverride) {
+      emit(root, pose, seed, lookOverride, visibility = 1) {
         const i = state.n;
         if (i >= capacity) return;
         state.n++;
@@ -98,6 +142,11 @@ export function PeopleInstances({
         for (const part of PARTS) {
           const mesh = meshes.current[part];
           if (!mesh) continue;
+          if (fade) {
+            const v = fade.visibility[part].array as Float32Array;
+            if (isPaired(part)) v[i * 2] = v[i * 2 + 1] = visibility;
+            else v[i] = visibility;
+          }
           if (isPaired(part)) {
             const [l, r] = state.out[part as (typeof PAIRED_PARTS)[number]];
             mesh.setMatrixAt(i * 2, l);
@@ -117,25 +166,43 @@ export function PeopleInstances({
           const mesh = meshes.current[part];
           if (!mesh) continue;
           mesh.count = isPaired(part) ? state.n * 2 : state.n;
+          if (mesh.count === 0) continue;
+          // Upload only visible instances, not the capacity reserved for the
+          // entire fleet. Both WebGPU and WebGL support these update ranges.
+          mesh.instanceMatrix.clearUpdateRanges();
+          mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
           mesh.instanceMatrix.needsUpdate = true;
-          if (state.coloursDirty && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+          if (state.coloursDirty && mesh.instanceColor) {
+            mesh.instanceColor.clearUpdateRanges();
+            mesh.instanceColor.addUpdateRange(0, mesh.count * 3);
+            mesh.instanceColor.needsUpdate = true;
+          }
+          if (fade) {
+            fade.visibility[part].clearUpdateRanges();
+            fade.visibility[part].addUpdateRange(0, mesh.count);
+            fade.visibility[part].needsUpdate = true;
+          }
         }
       },
     }),
-    [capacity, state],
+    [capacity, state, fade],
   );
 
   return (
     <group>
       {PARTS.map((part) => (
         <instancedMesh
-          key={`${part}-${capacity}`}
+          key={`${part}-${capacity}-${fade ? 'fade' : 'solid'}`}
           ref={(m) => {
             meshes.current[part] = m;
             // A fresh mesh has no colours yet: force every slot to recolour.
             if (m) state.seeds.fill(-1);
           }}
-          args={[geometries[part], material!, isPaired(part) ? capacity * 2 : capacity]}
+          args={[
+            geometries[part],
+            fade ? fade.materials[part] : material!,
+            isPaired(part) ? capacity * 2 : capacity,
+          ]}
           castShadow={castShadow}
           receiveShadow
           frustumCulled={false}

@@ -1,0 +1,183 @@
+{
+  "version": "roi-events-2",
+  "elapsedSeconds": 53.308549400000004,
+  "config": {
+    "days": 30,
+    "repetitions": 10,
+    "seed": 41,
+    "dailyTrips": 100000,
+    "vehicles": 200,
+    "hours": 14,
+    "startHour": 6,
+    "capacity": 22,
+    "speedKmh": 18,
+    "peakSpeedFactor": 0.65,
+    "movingKmPerL": 6,
+    "idleLPerHour": 0.8,
+    "startLitres": 0.02,
+    "dieselPhp": 94.55,
+    "serviceSeconds": 5,
+    "passengerSeconds": 1.5,
+    "terminalSeconds": 60,
+    "emptyStopProbability": 0.15,
+    "emptyStopSeconds": 22,
+    "extraTerminalSeconds": 120,
+    "fillShare": 0.9,
+    "maxHoldSeconds": 900,
+    "holdStepSeconds": 60,
+    "plannerAdoption": 0.5,
+    "museAdoption": 0.5,
+    "boundaryPhp": 700,
+    "otherDailyPhp": 100,
+    "maintenancePhpPerKm": 0,
+    "dataPhpPerVehicleDay": 5,
+    "serverPhpPerDay": 40,
+    "hardwarePhpPerVehicleDay": 1,
+    "driverQuestionsPerDay": 10,
+    "commuterQuestionShare": 0.02,
+    "inputTokens": 1000,
+    "outputTokens": 200,
+    "cacheHitShare": 0,
+    "voiceShare": 0.5,
+    "audioSeconds": 5,
+    "inputUsdPerMillion": 1.25,
+    "outputUsdPerMillion": 4.25,
+    "transcriptionUsdPerHour": 0.18,
+    "phpPerUsd": 58,
+    "groups": {
+      "regular": 0.65,
+      "student": 0.2,
+      "pwd": 0.05,
+      "senior": 0.08,
+      "pregnant": 0.02
+    },
+    "fare": {
+      "base": 14,
+      "baseKm": 4,
+      "perKm": 2,
+      "discountPct": 20
+    }
+  },
+  "route": {
+    "name": "SM Tungko ↔ SM Fairview",
+    "stops": [
+      {
+        "name": "SM City San Jose del Monte",
+        "km": 0
+      },
+      {
+        "name": "Savano Park",
+        "km": 0.5048828608194407
+      },
+      {
+        "name": "Pleasant Hills",
+        "km": 0.9763252040711883
+      },
+      {
+        "name": "Sampaguita",
+        "km": 1.527786259483326
+      },
+      {
+        "name": "Malaria",
+        "km": 2.1406018618129887
+      },
+      {
+        "name": "Mountain View",
+        "km": 3.697809409742068
+      },
+      {
+        "name": "Amparo",
+        "km": 4.84371391075108
+      },
+      {
+        "name": "Dela Costa Subdivision",
+        "km": 5.7190634299761385
+      },
+      {
+        "name": "Mater Carmeli School",
+        "km": 6.591790043000702
+      },
+      {
+        "name": "La Mesa Dam",
+        "km": 6.916926854396016
+      },
+      {
+        "name": "Lagro",
+        "km": 7.18386094891445
+      },
+      {
+        "name": "SM City Fairview Jeepney Terminal",
+        "km": 8.607952785633048
+      }
+    ],
+    "note": "Outbound distances from the bundled OSM route. Return service uses the same stop distances in reverse as a simplifying assumption; actual return roads differ. No validated corridor ridership, fleet size, traffic or passenger mix."
+  },
+  "summary": [
+    {
+      "mode": "baseline",
+      "days": 300,
+      "requested": 30000000,
+      "completed": 28657910,
+      "unserved": 1342090,
+      "revenuePhp": 489800870.25,
+      "fuelPhp": 202099721.15347838,
+      "fuelLitres": 2137490.4405444576,
+      "appPhp": 0,
+      "aiPhp": 0,
+      "boundaryPhp": 42000000,
+      "otherPhp": 6000000,
+      "profitPhp": 239701149.0965217,
+      "km": 11120216.057938376,
+      "dailyPerVehicle": 3995.0191516086948,
+      "meanWaitMin": 20.11534058796728,
+      "unservedWaitHours": 1598007.8678460182,
+      "monthlyPerVehicle": 119850.5745482608,
+      "p10": 119686.72387870649,
+      "p90": 119928.803249515
+    },
+    {
+      "mode": "planner",
+      "days": 300,
+      "requested": 30000000,
+      "completed": 28633876,
+      "unserved": 1366124,
+      "revenuePhp": 489405452.5,
+      "fuelPhp": 189068472.3773257,
+      "fuelLitres": 1999666.5507913884,
+      "appPhp": 372000,
+      "aiPhp": 0,
+      "boundaryPhp": 42000000,
+      "otherPhp": 6000000,
+      "profitPhp": 251964980.1226743,
+      "km": 10081107.287418839,
+      "dailyPerVehicle": 4199.416335377905,
+      "meanWaitMin": 20.049085281974257,
+      "unservedWaitHours": 1684784.7650567617,
+      "monthlyPerVehicle": 125982.49006133713,
+      "p10": 125883.4115983011,
+      "p90": 126060.81050566766
+    },
+    {
+      "mode": "muse",
+      "days": 300,
+      "requested": 30000000,
+      "completed": 28633876,
+      "unserved": 1366124,
+      "revenuePhp": 489405452.5,
+      "fuelPhp": 189068472.3773257,
+      "fuelLitres": 1999666.5507913884,
+      "appPhp": 372000,
+      "aiPhp": 154860.00000000003,
+      "boundaryPhp": 42000000,
+      "otherPhp": 6000000,
+      "profitPhp": 251810120.1226743,
+      "km": 10081107.287418839,
+      "dailyPerVehicle": 4196.835335377905,
+      "meanWaitMin": 20.049085281974257,
+      "unservedWaitHours": 1684784.7650567617,
+      "monthlyPerVehicle": 125905.06006133715,
+      "p10": 125805.98159830108,
+      "p90": 125983.38050566766
+    }
+  ]
+}
