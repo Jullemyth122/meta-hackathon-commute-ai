@@ -156,6 +156,8 @@ Set `META_API_KEY`, `META_MODEL` (the model ID from the Meta Hackathon portal), 
 
 ## 🗺️ The 3D Map & Routes
 
+**Added feature: OpenStreetMap/OpenFreeMap integration.** CommuteAI adds real-world geography to the reused 3D foundation using [OpenFreeMap's free vector tile service](https://openfreemap.org/), which requires no API key. This avoids a Google Maps API dependency and its potential usage charges. [Google Maps Platform](https://developers.google.com/maps/billing-and-pricing/overview) has usage-based pricing with free usage caps, so the distinction is avoiding billable map usage rather than claiming every Google Maps request costs money.
+
 The twin opens on **Tungko – SM City Fairview** (Quirino Highway, the bundled route) on a real 3D vector map, with the Metro Manila network around it:
 
 - **3D Map:** OpenStreetMap vector tiles served by [OpenFreeMap](https://openfreemap.org) (free, no API key required), decoded and triangulated in a background Web Worker. Set `VITE_MAP_TILEJSON=off` in `.env` to run without the map.
