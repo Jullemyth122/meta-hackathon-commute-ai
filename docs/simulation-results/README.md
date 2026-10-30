@@ -63,8 +63,9 @@ one, drive at the hour's traffic speed (about 11.7 km/h at the rush, 15–16 km/
 at midday, stops included, so SM Tungko → SM Fairview takes ~44 / ~33 min),
 load at the terminal line (the pila: until 90% full, up to 5 minutes), knock off
 between 8:30 and 10 PM, finish the trip to a terminal and park. The ledger
-closes at 3 AM and the clock stops after day 31. Crowds use the published 300
-riders per jeepney a day. Measured on the Tungko–SM Fairview loop with 60
+closes at 3 AM and the clock stops after day 31. Crowds use a literature-informed
+scenario of 300 riders per jeepney a day, not a measured corridor count (see the
+[source register](../evidence-and-decision-math.md)). Measured in simulation on the Tungko–SM Fairview loop with 60
 jeepneys: ~11 on board at the rush, 128 km and 29 L a day, ₱700 net a day. The
 lab's default day (6 AM, 14 hours, 250 riders) gives ₱528; with the twin's day
 (5 AM, 16 hours, 300 riders) it gives ₱888. All three sit inside the ₱400–800
