@@ -1,10 +1,81 @@
-# Meta Hackathon: CommuteAI
+# CommuteAI
 
-**A GPS-anchored 3D WebGPU digital twin of Metro Manila's jeepneys: one route simulated jeepney by jeepney and rider by rider, the rest of the network estimated around it, with driver and commuter phone interfaces, a simulated cabin passenger counter targeting a low-cost ESP32-camera-to-phone deployment, real-time smartphone GPS tracking, and a grounded Meta AI assistant.**
+### Making every seat, stop and peso count.
 
-> 📖 See **[`Notes.md`](./Notes.md)** for the hackathon contribution disclosure, Meta AI's role, feature inventory, proposed hardware budget and simulation limits. The author reused a pre-existing 3D foundation; the submission focuses on the new CommuteAI features. Camera deployment and financial benefits still require field validation.
+**Know which jeepney you can catch. Help drivers notice the passengers they might miss. Make fuel decisions with the cost in view.**
 
----
+CommuteAI is a Meta AI-powered transport prototype for Philippine jeepneys. It brings commuters, drivers and operators into a shared 3D world where seats, queues, walking journeys and vehicle movements inform the next decision—with questions and explanations in English, Tagalog or Taglish.
+
+**Built for the Meta Global AI Developer Hackathon · OpenStreetMap geography · Voice and contextual guidance · Simulation-led product development**
+
+[Explore the evidence and savings math](./docs/evidence-and-decision-math.md) · [Read the product and technical notes](./Notes.md) · [Inspect saved experiments](./docs/simulation-results/README.md)
+
+## The moments we want to improve
+
+**“May paparating pang pasahero?”** A driver has empty seats while people are walking or taking a tricycle toward the next stop. CommuteAI's demo shows who is approaching, how far away they are and whether they are expected before the jeepney—so the driver can recheck the situation on arrival.
+
+**“Aabot ba ako—and may upuan pa?”** The nearest jeepney is not always the one a commuter can board. The demo considers their arrival at the stop, passengers ahead in the queue and estimated seats after drop-offs.
+
+**“Saan mas sulit magpakarga?”** A lower diesel price matters only if the station is usable and reachable. The driver view shows stations ahead on the route, dated price estimates, simulated tank information and the possible saving on a top-up.
+
+**“May mas malapit bang sakayan?”** The planner compares mapped boarding stops and walking/tricycle access. Our next-step proposal is to help a commuter reach a verified pickup point from a secondary road when it is closer and the jeepney can still be caught. Dynamic roadside rendezvous is a proposed extension, not a completed feature.
+
+## A product prototype with a path to the road
+
+**We intend to develop CommuteAI into an actual live product. Today, it is a demo-product prototype built through simulation.** Our team currently lacks the funding to produce and install the camera hardware and run a real fleet pilot. We are using the demo to develop the experience, test decision logic and make the next investment concrete.
+
+The software includes browser GPS tracking, planning logic and Meta API integrations. The proposed deployment connects an ESP32 camera to a phone running a YOLO-based passenger detector, then shares occupancy and GPS with the planner. Physical camera integration, dependable live demand data and field-validated savings still need engineering and testing. A convincing simulation is a starting point for that work, not proof of production readiness.
+
+| Experience | What you can explore today |
+| --- | --- |
+| **Commuter view** | Catchable jeepneys, queue-aware seat estimates, fares and direct/one-transfer trip options. |
+| **Driver view** | Stop/pass reasons, approaching passengers, stations ahead, trip budgets and modelled earnings. |
+| **Operator's 3D twin** | A focused route simulated vehicle by vehicle and rider by rider, with working days, terminal queues and estimated activity on the surrounding network. |
+| **Sensor lab** | A virtual cabin camera, simulated detections and passenger-counting logic compared with simulation ground truth. |
+| **Profit & service lab** | Compare operating policies and inspect what happens to driver costs, waiting times and service—not just the most favourable number. |
+
+## What Meta AI adds
+
+Ask about the situation in your own words. Meta transcription handles recorded questions; the configured Meta language model explains the relevant screen and computed plan in context. The planner calculates fares, seats and arrival estimates. Optional ElevenLabs/Azure or browser speech reads replies aloud.
+
+The product hypothesis is that understandable voice guidance helps people act on information they would otherwise miss. We will measure that benefit against planner-only use. A deterministic fallback keeps the demo useful when Meta is unavailable, and its response source is identified separately.
+
+## Real evidence. Visible assumptions. Testable benefits.
+
+Our inputs combine OpenStreetMap geography, historical transit information, transport research and a dated DOE fuel-price snapshot. Passenger demand and many operating parameters remain simulated. The [evidence guide](./docs/evidence-and-decision-math.md) links verified references from **2016, 2018, 2021, 2023 and 2026** and explains which numbers are measured, published scenarios or assumptions.
+
+It also works through the decisions rather than promising a universal savings percentage:
+
+- **Approaching passengers:** additional fares minus waiting fuel, operating costs and lost earnings elsewhere; onboard passenger delay counts too. A bounded roadside hold is proposed, not currently automated.
+- **Cheaper diesel:** purchase-price savings minus additional costs, subject to fuel reserve and on-route reachability.
+- **A closer pickup:** walking time plus crossing/access time and an uncertainty buffer must fit within the jeepney's arrival time.
+
+These examples are illustrative arithmetic, not field results. The next step is a small corridor pilot that measures driver take-home income, fuel use, missed pickups and commuter journey times together.
+
+## Open geography, lower mapping barriers
+
+OpenStreetMap data, delivered through [OpenFreeMap](https://openfreemap.org/), supplies the roads, buildings, water and parks in the twin without a map API key. This avoids Google Maps usage charges; [Google Maps Platform](https://developers.google.com/maps/billing-and-pricing/overview) has free usage caps and usage-based billing. The mapping integration is part of CommuteAI's reported hackathon work.
+
+## Try the demo locally
+
+```sh
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` for the twin. In a second window, open `http://localhost:5173/track.html` and select **Simulate a ride** to test the tracker indoors. Same-browser loopback needs no Firebase setup. Real phone-to-dashboard tracking requires Firebase configuration and HTTPS; Meta voice/context features require server-side credentials. See the developer guide below.
+
+For a quick tour: inspect a jeepney in **Live twin**, compare **Driver** and **Commuter** views, ask a contextual question, then explore the **Sensor lab** and **Profit & service lab**. Check whether each result is simulated, estimated or supplied by live GPS.
+
+## Building toward a pilot
+
+We welcome collaboration with drivers, cooperatives, operators and hardware partners who can help validate one corridor. Funding would support camera kits and installation, phone compatibility, connectivity, labelled test footage and field evaluation. The [pilot plan](./docs/evidence-and-decision-math.md#a-practical-pilot-and-funding-path) sets out what must be measured before claiming real-world impact.
+
+**Hackathon disclosure:** the author reused a pre-existing 3D foundation. New CommuteAI transport features and integrations are described in [Notes.md](./Notes.md), alongside recorded development dates and remaining provenance details. Existing libraries, geographic data and the reused foundation are not claimed as newly authored work.
+
+<details>
+<summary><strong>Developer guide: architecture, controls, setup and verification</strong></summary>
+
 
 ## 📌 Overview
 
@@ -183,3 +254,5 @@ The twin opens on **Tungko – SM City Fairview** (Quirino Highway, the bundled 
 - **9 Draw Calls for All Articulated People:** Every passenger and animated driver is rendered by 9 shared `InstancedMesh` body-part buffers.
 - **Zero React Re-Renders on the 60 FPS Loop:** Simulation state lives in plain TypeScript classes ([`TwinRuntime`](./src/app/twinRuntime.ts), [`DoorwayRuntime`](./src/app/doorwayRuntime.ts)) mutated in place inside `useFrame`. HUD panels poll at `0.2–8 Hz`; network-wide totals are worked out every 5 s.
 - **Shadow & PiP Optimizations:** Device pixel ratio is capped at `1.75`, the shadow frustum tracks the camera target, and the `320×240` PiP is redrawn at the camera's own 24 FPS, not the screen's.
+
+</details>

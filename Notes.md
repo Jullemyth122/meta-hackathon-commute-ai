@@ -1,7 +1,27 @@
-# CommuteAI — Complete Technical Notes, Architecture & Implementation Reference
+# CommuteAI — Product Vision, Evidence and Technical Notes
 
 > **Meta Hackathon — CommuteAI**
 > A GPS-anchored 3D WebGPU digital twin of Philippine jeepney transport, a simulated cabin passenger counter with a proposed low-cost ESP32-camera-to-phone deployment, a smartphone GPS tracker (`/track.html`), and a grounded Meta AI operations assistant (`/api/assist`). Hardware cost, detector accuracy and financial benefits require field validation.
+
+## The product we are building toward
+
+**Making every seat, stop and peso count.** CommuteAI aims to connect a driver's next decision with the commuter who needs that ride: notice people approaching before a pickup is missed, understand whether a cheaper diesel station is worth reaching, and find a catchable ride from a convenient boarding point.
+
+**This is a demo-product prototype intended to become a live product.** The author reports that the team currently lacks the funding to produce/install the camera hardware and run a real fleet pilot. Simulation lets the team develop the software and test its assumptions at low cost. The architecture has a plausible path to deployment, but real hardware integration, reliable live inputs and measured benefits still need engineering and field validation. Lack of funding is not presented as proof that all other production work is complete.
+
+### Real statistics, transparent assumptions and decision mathematics
+
+The model is informed by real geography, historical transport research and a dated DOE price snapshot. It also contains synthetic demand and adjustable assumptions. **Research-informed does not mean every passenger, fare outcome or traffic condition is measured live.** Our [evidence and decision-math guide](./docs/evidence-and-decision-math.md) identifies verified references from 2016, 2018, 2021, 2023 and 2026, explains their scope, and distinguishes them from observations and model choices. This is not a continuous annual dataset.
+
+The same guide works through three product decisions, using explicitly illustrative inputs:
+
+| Decision | What is available in the demo | What the worked example adds |
+| --- | --- | --- |
+| Eight empty seats and several people approaching | Arrival heads-up, distance/ETA, vehicle timing and queue-aware seats. | A proposed bounded-hold calculation: expected extra fares minus fuel, operating costs and lost earnings, while counting onboard delay. Automatic roadside holding is not implemented. |
+| Enough diesel to reach a cheaper station? | On-route station candidates, dated estimated prices and simulated tank context. | Fuel reserve/reachability and total incremental cost. The example gives ₱77.47 net benefit on one hypothetical 30 L top-up, not a daily savings promise. |
+| Reach the jeepney via a nearer secondary-road connection | Candidate mapped stops, first-mile access and catchability estimates. | A proposed verified rendezvous point: shorter walking distance is useful only when the person can arrive before the jeepney, safely board in the right direction and find space. Arbitrary roadside interception is not implemented. |
+
+See the [source register, formulas, examples and pilot plan](./docs/evidence-and-decision-math.md) for assumptions and limitations. The examples are independent decision illustrations; they must not be added together or presented as measured driver income.
 
 ## Hackathon contribution, provenance and AI role
 
